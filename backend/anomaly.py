@@ -4,7 +4,7 @@ from backend.config import (
     RUNNING_PERSISTENCE_TIME, RUNNING_MIN_HIT_STREAK,
     UNATTENDED_OBJECT_TIME, STATIONARY_THRESHOLD, UNATTENDED_CLASSES,
     UNATTENDED_OWNER_PROXIMITY_PX, UNATTENDED_OWNER_GRACE_TIME,
-    FALL_ASPECT_RATIO_THRESHOLD, FALL_PERSISTENCE_TIME,
+    FALL_PERSISTENCE_TIME,
     RESTRICTED_ZONE_ENABLED, RESTRICTED_ZONE_MIN_DWELL, RESTRICTED_ZONES,
     FIGHT_DETECTION_ENABLED, FIGHT_PROXIMITY_PX, FIGHT_MIN_PAIR_SPEED,
     FIGHT_PERSISTENCE_TIME, FIGHT_MIN_HIT_STREAK,
@@ -16,13 +16,159 @@ class AnomalyDetector:
     def __init__(self):
         self.track_history: dict = {}
         self.running_candidate_since: dict[int, float] = {}
-        self.fall_candidate_since: dict[int, float] = {}
+        self.fall_candidate_since: dict[object, float] = {}
         self.zone_entry_since: dict[tuple[int, str], float] = {}
         self.fight_candidate_since: dict[tuple[int, int], float] = {}
         self.fight_last_alert_at: dict[tuple[int, int], float] = {}
         self.owner_absent_since: dict[int, float] = {}
+        self.fall_candidate_boxes: dict[object, list[float]] = {}
+        self.fall_last_seen_at: dict[object, float] = {}
+        self.fall_active_until: dict[object, float] = {}
+        self.fall_active_payload: dict[object, dict] = {}
 
-    def update(self, tracks: list, current_time: float) -> list:
+    def _emit_fall_anomalies(
+        self,
+        tracks: list,
+        current_time: float,
+        fall_detections: list[dict],
+        fall_persistence_time: float = FALL_PERSISTENCE_TIME,
+    ) -> list[dict]:
+        anomalies: list[dict] = []
+
+        def _iou(a: list[float], b: list[float]) -> float:
+            ax1, ay1, ax2, ay2 = a
+            bx1, by1, bx2, by2 = b
+            ix1 = max(ax1, bx1)
+            iy1 = max(ay1, by1)
+            ix2 = min(ax2, bx2)
+            iy2 = min(ay2, by2)
+            iw = max(0.0, ix2 - ix1)
+            ih = max(0.0, iy2 - iy1)
+            inter = iw * ih
+            if inter <= 0:
+                return 0.0
+            area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+            area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+            union = area_a + area_b - inter
+            return inter / union if union > 0 else 0.0
+
+        active_fall_keys: set[object] = set()
+        emitted_keys: set[object] = set()
+        min_area = FRAME_WIDTH * FRAME_HEIGHT * 0.012
+
+        for det in fall_detections:
+            fx1, fy1, fx2, fy2 = det["bbox"]
+            fbox = [float(fx1), float(fy1), float(fx2), float(fy2)]
+            confidence = float(det.get("confidence", 0.0))
+            fw = max(1.0, float(fx2) - float(fx1))
+            fh = max(1.0, float(fy2) - float(fy1))
+            area = fw * fh
+            # Keep HF model as the source of truth, but reject tiny / high / very
+            # vertical boxes that frequently cause false positives (wall objects).
+            if float(fy2) < FRAME_HEIGHT * 0.38:
+                continue
+            if area < min_area:
+                continue
+            if (fw / fh) < 0.50:
+                continue
+
+            fcx = (fx1 + fx2) / 2.0
+            fcy = (fy1 + fy2) / 2.0
+            candidate_key: object = ("fall_region", int(fcx // 96), int(fcy // 96))
+            best_track_id = None
+
+            # Reuse an existing candidate key when overlap is strong, so
+            # persistence survives slight box movement between frames.
+            best_existing_key = None
+            best_existing_iou = 0.0
+            for k, prev_box in self.fall_candidate_boxes.items():
+                score = _iou(fbox, prev_box)
+                if score > best_existing_iou:
+                    best_existing_iou = score
+                    best_existing_key = k
+            if best_existing_key is not None and best_existing_iou >= 0.30:
+                candidate_key = best_existing_key
+
+            active_fall_keys.add(candidate_key)
+            self.fall_candidate_boxes[candidate_key] = fbox
+            self.fall_last_seen_at[candidate_key] = current_time
+            if candidate_key not in self.fall_candidate_since:
+                self.fall_candidate_since[candidate_key] = current_time
+                continue
+            elapsed = current_time - self.fall_candidate_since[candidate_key]
+            if elapsed >= fall_persistence_time:
+                cx = (fx1 + fx2) / 2.0
+                cy = (fy1 + fy2) / 2.0
+                anomaly = {
+                    "type": "fall_detected",
+                    "duration": round(elapsed, 1),
+                    "confidence": float(round(confidence, 3)),
+                    "position": [cx, cy],
+                    "bbox": [int(fx1), int(fy1), int(fx2), int(fy2)],
+                }
+                if best_track_id is not None:
+                    anomaly["track_id"] = best_track_id
+                else:
+                    anomaly["note"] = "hf_fall_model_confirmed"
+                anomalies.append(anomaly)
+                emitted_keys.add(candidate_key)
+                self.fall_active_until[candidate_key] = current_time + 3.0
+                self.fall_active_payload[candidate_key] = {
+                    "position": [cx, cy],
+                    "bbox": [int(fx1), int(fy1), int(fx2), int(fy2)],
+                    "confidence": max(
+                        float(round(confidence, 3)),
+                        float(self.fall_active_payload.get(candidate_key, {}).get("confidence", 0.0)),
+                    ),
+                }
+
+        # Keep a confirmed fall active for a short hold window so alerts do not
+        # flicker off/on when the detector briefly misses a few frames.
+        for k, until_ts in list(self.fall_active_until.items()):
+            if until_ts < current_time:
+                self.fall_active_until.pop(k, None)
+                self.fall_active_payload.pop(k, None)
+                continue
+            if k in emitted_keys:
+                continue
+            payload = self.fall_active_payload.get(k)
+            if not payload:
+                continue
+            since = self.fall_candidate_since.get(k, current_time)
+            anomalies.append(
+                {
+                    "type": "fall_detected",
+                    "duration": round(max(0.0, current_time - since), 1),
+                    "confidence": payload.get("confidence", 0.0),
+                    "position": payload.get("position"),
+                    "bbox": payload.get("bbox"),
+                    "note": "hf_fall_model_confirmed",
+                }
+            )
+
+        stale_fall_keys = [
+            k
+            for k in self.fall_candidate_since
+            if (
+                k not in active_fall_keys
+                and (current_time - self.fall_last_seen_at.get(k, 0.0)) > 2.0
+                and k not in self.fall_active_until
+            )
+        ]
+        for k in stale_fall_keys:
+            self.fall_candidate_since.pop(k, None)
+            self.fall_candidate_boxes.pop(k, None)
+            self.fall_last_seen_at.pop(k, None)
+
+        return anomalies
+
+    def update(
+        self,
+        tracks: list,
+        current_time: float,
+        fall_detections: list[dict] | None = None,
+        fall_persistence_time: float = FALL_PERSISTENCE_TIME,
+    ) -> list:
         anomalies = []
 
         person_positions = [
@@ -85,23 +231,6 @@ class AnomalyDetector:
                         })
                 else:
                     self.running_candidate_since.pop(track_id, None)
-
-                # Fall detection heuristic: person appears horizontally oriented
-                # (w/h exceeds threshold) for a minimum persistence window.
-                aspect_ratio = w / h
-                if aspect_ratio >= FALL_ASPECT_RATIO_THRESHOLD:
-                    if track_id not in self.fall_candidate_since:
-                        self.fall_candidate_since[track_id] = current_time
-                    elif current_time - self.fall_candidate_since[track_id] >= FALL_PERSISTENCE_TIME:
-                        anomalies.append({
-                            "type": "fall_detected",
-                            "track_id": track_id,
-                            "duration": round(current_time - self.fall_candidate_since[track_id], 1),
-                            "aspect_ratio": round(aspect_ratio, 2),
-                            "position": [cx, cy],
-                        })
-                else:
-                    self.fall_candidate_since.pop(track_id, None)
 
                 # Digital fencing: unauthorized person in restricted zone.
                 if RESTRICTED_ZONE_ENABLED:
@@ -234,5 +363,15 @@ class AnomalyDetector:
         for k in stale_fight_keys:
             self.fight_candidate_since.pop(k, None)
             self.fight_last_alert_at.pop(k, None)
+
+        if fall_detections:
+            anomalies.extend(
+                self._emit_fall_anomalies(
+                    tracks,
+                    current_time,
+                    fall_detections,
+                    fall_persistence_time=fall_persistence_time,
+                )
+            )
 
         return anomalies

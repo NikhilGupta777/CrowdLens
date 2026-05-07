@@ -29,8 +29,8 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
 };
 
 const card: CSSProperties = {
-  background: "rgba(255,255,255,0.025)",
-  border: "1px solid rgba(255,255,255,0.07)",
+  background: "var(--app-card-bg)",
+  border: "1px solid var(--app-card-border)",
   borderRadius: 14,
   padding: "20px 24px",
 };
@@ -48,7 +48,7 @@ function TabButton({
         background: active
           ? "linear-gradient(90deg, rgba(99,102,241,0.25), rgba(59,130,246,0.15))"
           : "rgba(255,255,255,0.04)",
-        color: active ? "#818cf8" : "#475569",
+        color: active ? "#818cf8" : "var(--app-text-muted)",
         borderBottom: `2px solid ${active ? "#6366f1" : "transparent"}`,
         transition: "all 0.18s",
       }}
@@ -106,9 +106,9 @@ function ReportsTab() {
   if (alerts.length === 0) {
     return (
       <div style={{ ...card, textAlign: "center", padding: 48 }}>
-        <Bot size={32} color="#334155" style={{ marginBottom: 12 }} />
-        <div style={{ color: "#475569", fontSize: 14 }}>No alerts recorded yet.</div>
-        <div style={{ color: "#475569", fontSize: 12, marginTop: 6 }}>
+        <Bot size={32} color="var(--app-text-muted)" style={{ marginBottom: 12 }} />
+        <div style={{ color: "var(--app-text-muted)", fontSize: 14 }}>No alerts recorded yet.</div>
+        <div style={{ color: "var(--app-text-muted)", fontSize: 12, marginTop: 6 }}>
           Start a detection session to generate incident reports.
         </div>
       </div>
@@ -117,11 +117,11 @@ function ReportsTab() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ fontSize: 12, color: "#475569", marginBottom: 4 }}>
+      <div style={{ fontSize: 12, color: "var(--app-text-muted)", marginBottom: 4 }}>
         {alerts.length} incidents available — click Generate to produce an AI incident report for any alert.
       </div>
       {alerts.map((alert) => {
-        const meta = TYPE_META[alert.anomaly.type] ?? { color: "#94a3b8", Icon: AlertCircle, label: alert.anomaly.type };
+        const meta = TYPE_META[alert.anomaly.type] ?? { color: "var(--app-text-muted)", Icon: AlertCircle, label: alert.anomaly.type };
         const { Icon } = meta;
         const report = reports[alert.id];
         const isGenerating = generating[alert.id];
@@ -136,7 +136,7 @@ function ReportsTab() {
                 </div>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: meta.color }}>{meta.label}</div>
-                  <div style={{ fontSize: 11, color: "#334155", marginTop: 2, fontFamily: "monospace" }}>
+                  <div style={{ fontSize: 11, color: "var(--app-text-muted)", marginTop: 2, fontFamily: "monospace" }}>
                     {new Date(alert.timestamp * 1000).toLocaleString(undefined)}
                     {alert.anomaly.track_id !== undefined && ` · Track #${alert.anomaly.track_id}`}
                     {alert.anomaly.count !== undefined && ` · ${alert.anomaly.count} people`}
@@ -152,7 +152,7 @@ function ReportsTab() {
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
                       padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)",
-                      background: "transparent", color: "#475569", cursor: "pointer", fontSize: 11,
+                      background: "transparent", color: "var(--app-text-muted)", cursor: "pointer", fontSize: 11,
                     }}
                   >
                     {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -167,7 +167,7 @@ function ReportsTab() {
                     padding: "6px 14px", borderRadius: 8,
                     border: "1px solid rgba(99,102,241,0.4)",
                     background: isGenerating ? "rgba(99,102,241,0.06)" : "rgba(99,102,241,0.12)",
-                    color: isGenerating ? "#334155" : "#818cf8",
+                    color: isGenerating ? "var(--app-text-muted)" : "#818cf8",
                     cursor: isGenerating ? "default" : "pointer", fontSize: 12, fontWeight: 600,
                   }}
                 >
@@ -191,7 +191,7 @@ function ReportsTab() {
                   <span style={{ fontSize: 10, color: "#818cf8", fontWeight: 700, letterSpacing: 1.5 }}>AI INCIDENT REPORT</span>
                 </div>
                 <pre style={{
-                  fontFamily: "inherit", fontSize: 13, color: "#94a3b8",
+                  fontFamily: "inherit", fontSize: 13, color: "var(--app-text)",
                   lineHeight: 1.7, whiteSpace: "pre-wrap", margin: 0,
                 }}>
                   {report}
@@ -319,10 +319,10 @@ function ChatTab() {
           <div style={{ padding: "24px 0" }}>
             <div style={{ ...card, marginBottom: 16, textAlign: "center", padding: "24px 20px" }}>
               <Brain size={28} color="#6366f1" style={{ marginBottom: 10 }} />
-              <div style={{ fontSize: 14, color: "#94a3b8", fontWeight: 600, marginBottom: 6 }}>
+              <div style={{ fontSize: 14, color: "var(--app-text)", fontWeight: 600, marginBottom: 6 }}>
                 AI Alert Assistant
               </div>
-              <div style={{ fontSize: 12, color: "#334155" }}>
+              <div style={{ fontSize: 12, color: "var(--app-text-muted)" }}>
                 Ask anything about your alert history. The AI has access to your last 50 events.
               </div>
             </div>
@@ -362,7 +362,7 @@ function ChatTab() {
                   ? "linear-gradient(135deg, #3b82f6, #6366f1)"
                   : "rgba(255,255,255,0.04)",
                 border: msg.role === "assistant" ? "1px solid rgba(255,255,255,0.07)" : "none",
-                color: msg.role === "user" ? "#fff" : "#94a3b8",
+                color: msg.role === "user" ? "#fff" : "var(--app-text)",
                 fontSize: 13,
                 lineHeight: 1.65,
                 whiteSpace: "pre-wrap",
@@ -397,7 +397,7 @@ function ChatTab() {
             flex: 1, padding: "12px 16px", borderRadius: 12, resize: "none",
             border: "1px solid rgba(255,255,255,0.1)",
             background: "rgba(255,255,255,0.04)",
-            color: "#e2e8f0", fontSize: 13, fontFamily: "inherit",
+            color: "var(--app-text)", fontSize: 13, fontFamily: "inherit",
             outline: "none",
           }}
         />
@@ -409,7 +409,7 @@ function ChatTab() {
             background: input.trim() && !streaming
               ? "linear-gradient(135deg, #3b82f6, #6366f1)"
               : "rgba(255,255,255,0.06)",
-            color: input.trim() && !streaming ? "#fff" : "#334155",
+            color: input.trim() && !streaming ? "#fff" : "var(--app-text-muted)",
             cursor: input.trim() && !streaming ? "pointer" : "default",
             display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600,
           }}
@@ -597,7 +597,7 @@ export default function AIPanel() {
             }}>
               <Bot size={18} color="#fff" />
             </div>
-            <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#f1f5f9", letterSpacing: -0.5, margin: 0 }}>
+            <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "var(--app-text)", letterSpacing: -0.5, margin: 0 }}>
               AI Assistant
             </h1>
           </div>
@@ -635,3 +635,4 @@ export default function AIPanel() {
     </div>
   );
 }
+

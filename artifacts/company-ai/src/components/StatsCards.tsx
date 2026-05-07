@@ -4,12 +4,12 @@ import { Users, ShieldAlert, Activity, Clock } from "lucide-react";
 function GlowNumber({ value, color }: { value: string | number; color: string }) {
   return (
     <div style={{
-      fontSize: 42,
+      fontSize: 48,
       fontWeight: 800,
       color,
       lineHeight: 1,
       fontVariantNumeric: "tabular-nums",
-      textShadow: `0 0 20px ${color}55`,
+      textShadow: "none",
       letterSpacing: -1,
     }}>
       {value}
@@ -29,44 +29,45 @@ function Card({
 }) {
   return (
     <div style={{
-      background: "rgba(255,255,255,0.025)",
-      border: `1px solid rgba(255,255,255,0.07)`,
-      borderRadius: 14,
-      padding: "18px 20px",
+      background: "var(--app-card-bg)",
+      border: "1px solid var(--app-card-border)",
+      borderRadius: 18,
+      padding: "30px 28px",
+      minHeight: 158,
       position: "relative",
       overflow: "hidden",
       transition: "border-color 0.3s",
       borderLeft: `3px solid ${color}`,
-      boxShadow: pulse ? `0 0 24px ${color}22` : "none",
+      boxShadow: "0 2px 8px rgba(22,20,18,0.04)",
     }}>
       {/* Background tint */}
       <div style={{
         position: "absolute", top: 0, right: 0,
-        width: 80, height: 80,
-        background: `radial-gradient(circle at top right, ${color}18, transparent)`,
+        width: 110, height: 110,
+        background: `radial-gradient(circle at top right, ${color}14, transparent)`,
         pointerEvents: "none",
       }} />
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-        <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22 }}>
+        <div style={{ fontSize: 11, color: "var(--app-text-muted)", letterSpacing: 1.8, fontWeight: 700 }}>
           {label}
         </div>
         <div style={{
           background: color + "18",
-          borderRadius: 8,
-          padding: "5px",
+          borderRadius: 14,
+          padding: "12px",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
         }}>
-          <Icon size={14} color={color} />
+          <Icon size={23} color={color} />
         </div>
       </div>
 
       <GlowNumber value={value} color={color} />
 
       {sub && (
-        <div style={{ fontSize: 11, color: "#475569", marginTop: 8, fontWeight: 500 }}>
+        <div style={{ fontSize: 14, color: "var(--app-text-muted)", marginTop: 10, fontWeight: 500 }}>
           {sub}
         </div>
       )}
@@ -98,7 +99,7 @@ interface Props {
 
 export default function StatsCards({ stats, anomalyCount }: Props) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Card
         label="LIVE OCCUPANCY"
         icon={Users}

@@ -1,6 +1,25 @@
-INFO:     Will watch for changes in these directories: ['C:\\Users\\g_n-n\\Desktop\\apps\\8thSem Project\\Gemini-Clone']
-INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
-INFO:     Started reloader process [2052] using WatchFiles
-INFO:     Started server process [4996]
+INFO:     Started server process [12364]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO:     127.0.0.1:52862 - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52942 - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52950 - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:53678 - "WebSocket /ws" [accepted]
+INFO:     connection open
+Task exception was never retrieved
+future: <Task finished name='Task-467' coro=<video_processing_loop() done, defined at C:\Users\g_n-n\Desktop\apps\8thSem Project\Gemini-Clone\backend\main.py:435> exception=error("OpenCV(4.13.0) D:\\a\\opencv-python\\opencv-python\\opencv\\modules\\core\\src\\alloc.cpp:73: error: (-4:Insufficient memory) Failed to allocate 1165152 bytes in function 'cv::OutOfMemoryError'\n")>
+Traceback (most recent call last):
+  File "C:\Users\g_n-n\Desktop\apps\8thSem Project\Gemini-Clone\backend\main.py", line 485, in video_processing_loop
+    ret, frame = cap.read()
+                 ^^^^^^^^^^
+cv2.error: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\core\src\alloc.cpp:73: error: (-4:Insufficient memory) Failed to allocate 1165152 bytes in function 'cv::OutOfMemoryError'
+
+INFO:     connection closed

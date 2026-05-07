@@ -5,17 +5,25 @@ import Dashboard from "./pages/Dashboard";
 import AlertHistory from "./pages/AlertHistory";
 import Settings from "./pages/Settings";
 import AIPanel from "./pages/AIPanel";
+import { useStickyAnomalies } from "./hooks/useStickyAnomalies";
 
 function getThreatLevel(anomalyCount: number, types: string[]): "secure" | "warning" | "critical" {
   if (anomalyCount === 0) return "secure";
-  if (types.includes("running") || types.includes("unattended_object") || types.includes("fight_suspected")) return "critical";
+  if (
+    types.includes("running")
+    || types.includes("unattended_object")
+    || types.includes("fight_suspected")
+    || types.includes("fall_detected")
+    || types.includes("restricted_zone")
+  ) return "critical";
   return "warning";
 }
 
 function AppShell() {
   const { frame, connected } = useDetection();
-  const anomalyTypes = frame?.anomalies.map((a) => a.type) ?? [];
-  const threatLevel = getThreatLevel(frame?.anomalies.length ?? 0, anomalyTypes);
+  const stickyAnomalies = useStickyAnomalies(frame?.anomalies ?? [], 8000);
+  const anomalyTypes = stickyAnomalies.map((a) => a.type);
+  const threatLevel = getThreatLevel(stickyAnomalies.length, anomalyTypes);
 
   return (
     <Layout connected={connected} threatLevel={threatLevel}>

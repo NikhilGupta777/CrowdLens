@@ -43,8 +43,8 @@ UNATTENDED_OBJECT_TIME = 5.0
 STATIONARY_THRESHOLD = 150.0
 UNATTENDED_OWNER_PROXIMITY_PX = 180.0
 UNATTENDED_OWNER_GRACE_TIME = 2.0
-FALL_ASPECT_RATIO_THRESHOLD = 1.45
-FALL_PERSISTENCE_TIME = 1.0
+FALL_PERSISTENCE_TIME = 0.4
+FALL_MODEL_CONFIDENCE_THRESHOLD = 0.18
 RESTRICTED_ZONE_ENABLED = True
 RESTRICTED_ZONE_MIN_DWELL = 0.6
 FIGHT_DETECTION_ENABLED = True
@@ -53,19 +53,26 @@ FIGHT_MIN_PAIR_SPEED = 16.0
 FIGHT_PERSISTENCE_TIME = 0.8
 FIGHT_MIN_HIT_STREAK = 3
 
-# COCO class IDs for unattended object detection
-# 24=backpack, 26=handbag, 28=suitcase, 39=bottle, 41=cup, 67=cell phone, 73=book
-UNATTENDED_CLASSES = [24, 26, 28, 39, 41, 67, 73]
+# Unattended object detection is disabled for now. Keep the code path intact,
+# but do not track bottles/bags/books/phones until the project needs them again.
+UNATTENDED_CLASSES = []
 
 # Rectangular digital-fence areas in absolute frame coordinates (1280x720).
 RESTRICTED_ZONES = [
     {"id": "RZ1", "name": "Restricted Zone A", "x1": 920, "y1": 80, "x2": 1240, "y2": 520},
 ]
 
-# Classes we track (person, animals, vehicles + unattended objects)
+# Active detection classes. Keep this intentionally narrow for reliability.
+# Other COCO classes remain available in code and can be re-enabled later.
 COCO_CLASSES = {
-    0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
+    0: "person",
+    2: "car",
+}
+
+# Disabled but intentionally kept for easy re-enable later.
+DISABLED_COCO_CLASSES = {
+    1: "bicycle", 3: "motorcycle", 5: "bus", 7: "truck",
     15: "cat", 16: "dog", 17: "horse", 18: "sheep", 19: "cow",
     24: "backpack", 26: "handbag", 28: "suitcase",
-    39: "bottle", 41: "cup", 67: "cell phone", 73: "book"
+    39: "bottle", 41: "cup", 67: "cell phone", 73: "book",
 }

@@ -503,6 +503,15 @@ function SimulationCanvas({
           const txt = "⚠ FIGHT SUSPECTED";
           ctx.fillText(txt, ax - ctx.measureText(txt).width / 2, ay - 64);
         } else if (anomaly.type === "fall_detected") {
+          const bbox = anomaly.bbox;
+          if (bbox && bbox.length === 4) {
+            const [bx1, by1, bx2, by2] = bbox;
+            ctx.strokeStyle = `rgba(220,38,38,${0.5 + 0.3 * pulse})`;
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([8, 4]);
+            ctx.strokeRect(bx1, by1, Math.max(1, bx2 - bx1), Math.max(1, by2 - by1));
+            ctx.setLineDash([]);
+          }
           ctx.strokeStyle = `rgba(220,38,38,${0.45 + 0.3 * pulse})`;
           ctx.lineWidth = 2.5;
           ctx.setLineDash([8, 4]);

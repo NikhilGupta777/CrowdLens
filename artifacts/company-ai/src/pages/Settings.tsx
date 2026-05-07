@@ -20,7 +20,7 @@ interface Config {
   stationary_threshold: number;
   unattended_owner_proximity_px: number;
   unattended_owner_grace_time: number;
-  fall_aspect_ratio_threshold: number;
+  fall_model_confidence_threshold: number;
   fall_persistence_time: number;
   restricted_zone_enabled: boolean;
   restricted_zone_min_dwell: number;
@@ -39,8 +39,8 @@ const DEFAULT_CONFIG: Config = {
   stationary_threshold: 150,
   unattended_owner_proximity_px: 180,
   unattended_owner_grace_time: 2.0,
-  fall_aspect_ratio_threshold: 1.45,
-  fall_persistence_time: 1.0,
+  fall_model_confidence_threshold: 0.18,
+  fall_persistence_time: 0.4,
   restricted_zone_enabled: true,
   restricted_zone_min_dwell: 0.6,
   fight_detection_enabled: true,
@@ -95,7 +95,7 @@ function PremiumSlider({
             <Icon size={14} color={color} />
           </div>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14, color: "#e2e8f0", marginBottom: 3 }}>{label}</div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--app-text)", marginBottom: 3 }}>{label}</div>
             <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>{description}</div>
           </div>
         </div>
@@ -195,7 +195,7 @@ function ToggleCard({
     >
       <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, cursor: "pointer" }}>
         <div>
-          <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13, marginBottom: 3 }}>{label}</div>
+          <div style={{ color: "var(--app-text)", fontWeight: 600, fontSize: 13, marginBottom: 3 }}>{label}</div>
           <div style={{ color: "#475569", fontSize: 11, lineHeight: 1.4 }}>{description}</div>
         </div>
         <input
@@ -418,7 +418,7 @@ export default function Settings() {
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", letterSpacing: -0.5, marginBottom: 4 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--app-text)", letterSpacing: -0.5, marginBottom: 4 }}>
             Detection Settings
           </h1>
           <p style={{ color: "#475569", fontSize: 13 }}>
@@ -457,8 +457,8 @@ export default function Settings() {
 
       {/* ── Overlay Style ──────────────────────────────────────────────────── */}
       <div style={{
-        background: "rgba(255,255,255,0.025)",
-        border: "1px solid rgba(255,255,255,0.07)",
+        background: "var(--app-card-bg)",
+        border: "1px solid var(--app-card-border)",
         borderRadius: 14,
         padding: 24,
         marginBottom: 20,
@@ -587,8 +587,8 @@ export default function Settings() {
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 20, marginBottom: 20 }}>
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: 24,
           }}
@@ -626,8 +626,8 @@ export default function Settings() {
 
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: 24,
           }}
@@ -693,8 +693,8 @@ export default function Settings() {
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 20, marginBottom: 20 }}>
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: 24,
           }}
@@ -704,20 +704,20 @@ export default function Settings() {
           </div>
 
           <PremiumSlider
-            label="Fall Aspect-Ratio Threshold"
-            description="Person width/height ratio above this value indicates possible fall posture."
+            label="Fall Model Confidence"
+            description="Minimum confidence from the Hugging Face fall model to treat a detection as fallen."
             icon={UserRoundX}
             color="#dc2626"
-            value={config.fall_aspect_ratio_threshold}
-            min={0.8}
-            max={3}
+            value={config.fall_model_confidence_threshold}
+            min={0.05}
+            max={0.95}
             step={0.05}
-            onChange={(v) => setConfig((c) => ({ ...c, fall_aspect_ratio_threshold: Number(v.toFixed(2)) }))}
+            onChange={(v) => setConfig((c) => ({ ...c, fall_model_confidence_threshold: Number(v.toFixed(2)) }))}
           />
 
           <PremiumSlider
-            label="Fall Persistence Window"
-            description="Seconds posture must persist before emitting a fall alert."
+            label="Fall Confirmation Window"
+            description="Seconds fallen detection must persist before emitting a fall alert."
             icon={Clock}
             color="#dc2626"
             value={config.fall_persistence_time}
@@ -731,8 +731,8 @@ export default function Settings() {
 
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: 24,
           }}
@@ -766,8 +766,8 @@ export default function Settings() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, marginBottom: 20 }}>
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: 24,
           }}
@@ -838,8 +838,8 @@ export default function Settings() {
 
       <div
         style={{
-          background: "rgba(255,255,255,0.025)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: "var(--app-card-bg)",
+          border: "1px solid var(--app-card-border)",
           borderRadius: 14,
           padding: 24,
           marginBottom: 20,
@@ -865,8 +865,8 @@ export default function Settings() {
 
       <div
         style={{
-          background: "rgba(255,255,255,0.025)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: "var(--app-card-bg)",
+          border: "1px solid var(--app-card-border)",
           borderRadius: 14,
           padding: 24,
         }}
@@ -934,3 +934,4 @@ export default function Settings() {
     </div>
   );
 }
+

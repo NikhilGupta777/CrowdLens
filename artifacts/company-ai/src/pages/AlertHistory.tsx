@@ -78,7 +78,7 @@ function exportCSV(alerts: AlertRecord[]) {
     "Pair Speed (px/f)",
     "Pair Distance (px)",
     "Duration (s)",
-    "Aspect Ratio",
+    "Fall Confidence",
     "Zone",
     "Position X",
     "Position Y",
@@ -100,7 +100,7 @@ function exportCSV(alerts: AlertRecord[]) {
       escapeCsvValue(record.anomaly.avg_pair_speed),
       escapeCsvValue(record.anomaly.distance),
       escapeCsvValue(record.anomaly.duration),
-      escapeCsvValue(record.anomaly.aspect_ratio),
+      escapeCsvValue(record.anomaly.confidence),
       escapeCsvValue(record.anomaly.zone_name ?? record.anomaly.zone_id ?? ""),
       escapeCsvValue(record.anomaly.position ? Math.round(record.anomaly.position[0]) : ""),
       escapeCsvValue(record.anomaly.position ? Math.round(record.anomaly.position[1]) : ""),
@@ -175,7 +175,7 @@ function renderDetails(record: AlertRecord): string {
   if (record.anomaly.avg_pair_speed !== undefined) parts.push(`${record.anomaly.avg_pair_speed} pair px/f`);
   if (record.anomaly.distance !== undefined) parts.push(`${record.anomaly.distance}px apart`);
   if (record.anomaly.duration !== undefined) parts.push(`${record.anomaly.duration}s`);
-  if (record.anomaly.aspect_ratio !== undefined) parts.push(`ratio ${record.anomaly.aspect_ratio}`);
+  if (record.anomaly.confidence !== undefined) parts.push(`conf ${(record.anomaly.confidence * 100).toFixed(0)}%`);
   if (record.anomaly.owner_absent !== undefined) parts.push(`away ${record.anomaly.owner_absent}s`);
   if (record.anomaly.zone_name) parts.push(record.anomaly.zone_name);
   else if (record.anomaly.zone_id) parts.push(record.anomaly.zone_id);
@@ -267,10 +267,10 @@ export default function AlertHistory() {
         justifyContent: "space-between", marginBottom: 20, gap: 12,
       }}>
         <div>
-          <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: "#f1f5f9", letterSpacing: -0.5, marginBottom: 4 }}>
+          <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: "var(--app-text)", letterSpacing: -0.5, marginBottom: 4 }}>
             Alert History
           </h1>
-          <p style={{ color: "#475569", fontSize: isMobile ? 11 : 13 }}>
+          <p style={{ color: "var(--app-text-muted)", fontSize: isMobile ? 11 : 13 }}>
             {alerts.length} total events recorded
           </p>
         </div>
@@ -298,7 +298,7 @@ export default function AlertHistory() {
               padding: "7px 12px", borderRadius: 8,
               border: "1px solid rgba(255,255,255,0.1)",
               background: "rgba(255,255,255,0.04)",
-              color: "#64748b", cursor: "pointer", fontSize: 12,
+              color: "var(--app-text-muted)", cursor: "pointer", fontSize: 12,
             }}
           >
             <Download size={13} />
@@ -312,7 +312,7 @@ export default function AlertHistory() {
               padding: "7px 12px", borderRadius: 8,
               border: "1px solid rgba(255,255,255,0.1)",
               background: "rgba(255,255,255,0.04)",
-              color: "#64748b", cursor: "pointer", fontSize: 12,
+              color: "var(--app-text-muted)", cursor: "pointer", fontSize: 12,
             }}
           >
             <Download size={13} />
@@ -326,7 +326,7 @@ export default function AlertHistory() {
               padding: "7px 12px", borderRadius: 8,
               border: "1px solid rgba(255,255,255,0.1)",
               background: "rgba(255,255,255,0.04)",
-              color: "#64748b", cursor: "pointer", fontSize: 12,
+              color: "var(--app-text-muted)", cursor: "pointer", fontSize: 12,
             }}
           >
             <RefreshCw size={13} style={{ animation: refreshing ? "spin 0.8s linear infinite" : "none" }} />
@@ -363,8 +363,8 @@ export default function AlertHistory() {
             key={type}
             onClick={() => setFilter(filter === type ? "all" : type)}
             style={{
-              background: "rgba(255,255,255,0.025)",
-              border: "1px solid rgba(255,255,255,0.07)",
+              background: "var(--app-card-bg)",
+              border: "1px solid var(--app-card-border)",
               borderRadius: 14,
               padding: "18px 16px",
               borderLeft: `3px solid ${color}`,
@@ -373,7 +373,7 @@ export default function AlertHistory() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 9, color: "#475569", letterSpacing: 1.8, fontWeight: 700 }}>
+              <div style={{ fontSize: 9, color: "var(--app-text-muted)", letterSpacing: 1.8, fontWeight: 700 }}>
                 {label.toUpperCase()}
               </div>
               <div style={{ background: `${color}18`, borderRadius: 8, padding: 5 }}>
@@ -383,7 +383,7 @@ export default function AlertHistory() {
             <div style={{ fontSize: 34, fontWeight: 800, color, lineHeight: 1, textShadow: `0 0 20px ${color}55` }}>
               {count}
             </div>
-            <div style={{ fontSize: 10, color: "#334155", marginTop: 8, fontWeight: 600, letterSpacing: 1 }}>
+            <div style={{ fontSize: 10, color: "var(--app-text-muted)", marginTop: 8, fontWeight: 600, letterSpacing: 1 }}>
               {severity}
             </div>
           </div>
@@ -393,14 +393,14 @@ export default function AlertHistory() {
       {showChart && (
         <div
           style={{
-            background: "rgba(255,255,255,0.025)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
             borderRadius: 14,
             padding: "20px 24px",
             marginBottom: 20,
           }}
         >
-          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 16 }}>
+          <div style={{ fontSize: 9, color: "var(--app-text-muted)", letterSpacing: 2, fontWeight: 700, marginBottom: 16 }}>
             ALERT TREND - LAST 10 MINUTES
           </div>
           {chartData.every((d) => (
@@ -412,7 +412,7 @@ export default function AlertHistory() {
             && d.restricted_zone === 0
             && d.manual_snapshot === 0
           )) ? (
-            <div style={{ textAlign: "center", padding: "20px 0", color: "#334155", fontSize: 13 }}>
+            <div style={{ textAlign: "center", padding: "20px 0", color: "var(--app-text-muted)", fontSize: 13 }}>
               No recent alert data - alerts will appear here as they occur
             </div>
           ) : (
@@ -429,7 +429,7 @@ export default function AlertHistory() {
                   }}
                   labelStyle={{ color: "#94a3b8" }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, color: "#64748b" }} />
+                <Legend wrapperStyle={{ fontSize: 11, color: "var(--app-text-muted)" }} />
                 <Bar dataKey="running" name="Running" fill="#a855f7" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="fight_suspected" name="Fight Suspected" fill="#f43f5e" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="unattended_object" name="Unattended Object" fill="#ef4444" radius={[3, 3, 0, 0]} />
@@ -455,13 +455,13 @@ export default function AlertHistory() {
             background: "rgba(255,255,255,0.04)",
             border: "1px solid rgba(255,255,255,0.08)",
             borderRadius: 8, padding: "8px 12px 8px 34px",
-            color: "#e2e8f0", fontSize: 13, outline: "none",
+            color: "var(--app-text)", fontSize: 13, outline: "none",
           }}
         />
         {searchQuery && (
           <button
             onClick={() => setSearchQuery("")}
-            style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+            style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--app-text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1 }}
           >×</button>
         )}
       </div>
@@ -498,22 +498,22 @@ export default function AlertHistory() {
             </button>
           );
         })}
-        <div style={{ marginLeft: "auto", fontSize: 11, color: "#334155" }}>
+        <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--app-text-muted)" }}>
           {filtered.length} events
         </div>
       </div>
 
       <div
         style={{
-          background: "rgba(255,255,255,0.025)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: "var(--app-card-bg)",
+          border: "1px solid var(--app-card-border)",
           borderRadius: 14,
           overflow: "hidden",
         }}
       >
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr style={{ background: "rgba(0,0,0,0.3)", color: "#334155", fontSize: 9, letterSpacing: 1.5, fontWeight: 700 }}>
+            <tr style={{ background: "rgba(0,0,0,0.3)", color: "var(--app-text-muted)", fontSize: 9, letterSpacing: 1.5, fontWeight: 700 }}>
               {["TIME", "TYPE", "SEVERITY", "DETAILS", "POSITION", "SOURCE", "EVIDENCE"].map((header) => (
                 <th key={header} style={{ padding: "12px 16px", textAlign: "left" }}>
                   {header}
@@ -524,11 +524,11 @@ export default function AlertHistory() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "#334155" }}>Loading...</td>
+                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>Loading...</td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "#334155" }}>No incidents recorded</td>
+                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>No incidents recorded</td>
               </tr>
             ) : (
               filtered.map((record) => {
@@ -546,7 +546,7 @@ export default function AlertHistory() {
                     className="alert-row"
                     style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}
                   >
-                    <td style={{ padding: "11px 16px", color: "#475569", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>
+                    <td style={{ padding: "11px 16px", color: "var(--app-text-muted)", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>
                       {new Date(record.timestamp * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                     </td>
                     <td style={{ padding: "11px 16px" }}>
@@ -558,14 +558,14 @@ export default function AlertHistory() {
                       </div>
                     </td>
                     <td style={{ padding: "11px 16px" }}>
-                      <span style={{ background: "rgba(255,255,255,0.04)", color: "#64748b", padding: "2px 8px", borderRadius: 6, fontSize: 9, fontWeight: 800, letterSpacing: 1 }}>
+                      <span style={{ background: "rgba(255,255,255,0.04)", color: "var(--app-text-muted)", padding: "2px 8px", borderRadius: 6, fontSize: 9, fontWeight: 800, letterSpacing: 1 }}>
                         {meta.severity}
                       </span>
                     </td>
-                    <td style={{ padding: "11px 16px", color: "#64748b", fontSize: 12 }}>
+                    <td style={{ padding: "11px 16px", color: "var(--app-text-muted)", fontSize: 12 }}>
                       {renderDetails(record) || "-"}
                     </td>
-                    <td style={{ padding: "11px 16px", color: "#334155", fontSize: 11, fontFamily: "monospace" }}>
+                    <td style={{ padding: "11px 16px", color: "var(--app-text-muted)", fontSize: 11, fontFamily: "monospace" }}>
                       {record.anomaly.position
                         ? `(${Math.round(record.anomaly.position[0])}, ${Math.round(record.anomaly.position[1])})`
                         : "-"}
@@ -622,7 +622,7 @@ export default function AlertHistory() {
                           />
                         </a>
                       ) : (
-                        <span style={{ color: "#334155", fontSize: 11 }}>—</span>
+                        <span style={{ color: "var(--app-text-muted)", fontSize: 11 }}>—</span>
                       )}
                     </td>
                   </tr>
@@ -636,3 +636,5 @@ export default function AlertHistory() {
     </div>
   );
 }
+
+

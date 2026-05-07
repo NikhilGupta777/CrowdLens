@@ -38,8 +38,8 @@ from backend.config import (
     COCO_CLASSES,
     UNATTENDED_OWNER_PROXIMITY_PX,
     UNATTENDED_OWNER_GRACE_TIME,
-    FALL_ASPECT_RATIO_THRESHOLD,
     FALL_PERSISTENCE_TIME,
+    FALL_MODEL_CONFIDENCE_THRESHOLD,
     RESTRICTED_ZONE_ENABLED,
     RESTRICTED_ZONE_MIN_DWELL,
     FIGHT_DETECTION_ENABLED,
@@ -63,6 +63,12 @@ from backend.config import (
     IOU_THRESHOLD,
 )
 from backend.detector import _download_model, is_model_ready, get_model_error
+from backend.fall_detector import (
+    _download_fall_model,
+    detect_falls,
+    get_fall_model_error,
+    is_fall_model_ready,
+)
 
 # ─── Global State ─────────────────────────────────────────────────────────────
 
@@ -79,8 +85,8 @@ current_config = {
     "stationary_threshold": STATIONARY_THRESHOLD,
     "unattended_owner_proximity_px": UNATTENDED_OWNER_PROXIMITY_PX,
     "unattended_owner_grace_time": UNATTENDED_OWNER_GRACE_TIME,
-    "fall_aspect_ratio_threshold": FALL_ASPECT_RATIO_THRESHOLD,
     "fall_persistence_time": FALL_PERSISTENCE_TIME,
+    "fall_model_confidence_threshold": FALL_MODEL_CONFIDENCE_THRESHOLD,
     "restricted_zone_enabled": RESTRICTED_ZONE_ENABLED,
     "restricted_zone_min_dwell": RESTRICTED_ZONE_MIN_DWELL,
     "fight_detection_enabled": FIGHT_DETECTION_ENABLED,
@@ -168,7 +174,16 @@ def _evict_stale_cooldowns(now: float) -> None:
 
 def _should_record_alert(anomaly: dict, now: float) -> bool:
     _evict_stale_cooldowns(now)
-    key = (anomaly.get("type"), anomaly.get("track_id"))
+    track_id = anomaly.get("track_id")
+    if track_id is not None:
+        key = (anomaly.get("type"), track_id)
+    else:
+        # For model-only falls or alerts without track IDs, avoid over-grouping
+        # all events under a single cooldown bucket.
+        pos = anomaly.get("position") or [0, 0]
+        cell_x = int(float(pos[0]) // 120)
+        cell_y = int(float(pos[1]) // 120)
+        key = (anomaly.get("type"), anomaly.get("note"), cell_x, cell_y)
     if now - _alert_cooldowns.get(key, 0) >= _ALERT_COOLDOWN_SECS:
         _alert_cooldowns[key] = now
         return True
@@ -373,6 +388,27 @@ def _build_tracks_from_yolo(
     return tracks
 
 
+def _scale_fall_detections_to_canvas(
+    fall_detections: list[dict], frame_width: int, frame_height: int
+) -> list[dict]:
+    """Scale fall detector boxes to the same 1280x720 canvas as person tracks."""
+    scale_x = FRAME_WIDTH / max(1, frame_width)
+    scale_y = FRAME_HEIGHT / max(1, frame_height)
+    scaled: list[dict] = []
+    for d in fall_detections:
+        x1, y1, x2, y2 = d.get("bbox", [0, 0, 0, 0])
+        sx1 = max(0, int(float(x1) * scale_x))
+        sy1 = max(0, int(float(y1) * scale_y))
+        sx2 = min(FRAME_WIDTH, int(float(x2) * scale_x))
+        sy2 = min(FRAME_HEIGHT, int(float(y2) * scale_y))
+        if sx2 <= sx1 or sy2 <= sy1:
+            continue
+        nd = dict(d)
+        nd["bbox"] = [sx1, sy1, sx2, sy2]
+        scaled.append(nd)
+    return scaled
+
+
 def _finalize_tracks(tracks: list, anomalies: list) -> list:
     running_ids = {a.get("track_id") for a in anomalies if a["type"] == "running"}
     for t in tracks:
@@ -439,6 +475,11 @@ async def video_processing_loop():
     def _detect_sync(f):
         return detector.detect(f, conf_override=VIDEO_DETECTION_CONFIDENCE)
 
+    def _fall_detect_sync(f):
+        return detect_falls(
+            f, conf_override=current_config["fall_model_confidence_threshold"]
+        )
+
     try:
         while True:
             ret, frame = cap.read()
@@ -486,11 +527,23 @@ async def video_processing_loop():
 
             # Run YOLO in thread pool — keeps the asyncio event loop responsive
             detections = await loop.run_in_executor(None, _detect_sync, frame_resized)
+            # Run fall model on source-resolution frame for better posture fidelity.
+            fall_detections = await loop.run_in_executor(
+                None, _fall_detect_sync, frame
+            )
+            fall_detections = _scale_fall_detections_to_canvas(
+                fall_detections, frame.shape[1], frame.shape[0]
+            )
             raw_tracks = tracker.update(detections)
 
             now = time.time()
             tracks = _build_tracks_from_yolo(raw_tracks, INFER_WIDTH, INFER_HEIGHT)
-            anomalies = _video_anomaly_detector.update(tracks, now)
+            anomalies = _video_anomaly_detector.update(
+                tracks,
+                now,
+                fall_detections=fall_detections,
+                fall_persistence_time=current_config["fall_persistence_time"],
+            )
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -883,11 +936,23 @@ async def stream_processing_loop(url: str):
             detections = await loop.run_in_executor(
                 None, detector.detect, frame, STREAM_CONFIDENCE
             )
+            fall_detections = await loop.run_in_executor(
+                None,
+                lambda f=frame: detect_falls(
+                    f, conf_override=current_config["fall_model_confidence_threshold"]
+                ),
+            )
+            fall_detections = _scale_fall_detections_to_canvas(fall_detections, W, H)
             raw_tracks = tracker.update(detections)
 
             now = time.time()
             tracks = _build_tracks_from_yolo(raw_tracks, W, H)
-            anomalies = _video_anomaly_detector.update(tracks, now)
+            anomalies = _video_anomaly_detector.update(
+                tracks,
+                now,
+                fall_detections=fall_detections,
+                fall_persistence_time=current_config["fall_persistence_time"],
+            )
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -971,6 +1036,7 @@ async def webcam_processing_loop():
             if frame is None:
                 continue
 
+            src_frame = frame
             frame = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
             # Run YOLO in thread pool — keeps the asyncio event loop responsive.
             # Without this the entire server freezes for ~200 ms every frame,
@@ -978,11 +1044,25 @@ async def webcam_processing_loop():
             detections = await loop.run_in_executor(
                 None, lambda f=frame: detector.detect(f, conf_override=WEBCAM_DETECTION_CONFIDENCE)
             )
+            fall_detections = await loop.run_in_executor(
+                None,
+                lambda f=src_frame: detect_falls(
+                    f, conf_override=current_config["fall_model_confidence_threshold"]
+                ),
+            )
+            fall_detections = _scale_fall_detections_to_canvas(
+                fall_detections, src_frame.shape[1], src_frame.shape[0]
+            )
             raw_tracks = tracker.update(detections)
 
             now = time.time()
             tracks = _build_tracks_from_yolo(raw_tracks, INFER_WIDTH, INFER_HEIGHT)
-            anomalies = anomaly_detector.update(tracks, now)
+            anomalies = anomaly_detector.update(
+                tracks,
+                now,
+                fall_detections=fall_detections,
+                fall_persistence_time=current_config["fall_persistence_time"],
+            )
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -1009,6 +1089,8 @@ async def lifespan(app: FastAPI):
     _db.load_into_deque(alert_history)
     thread = threading.Thread(target=_download_model, daemon=True)
     thread.start()
+    fall_thread = threading.Thread(target=_download_fall_model, daemon=True)
+    fall_thread.start()
     yield
     await _cancel_active()
 
@@ -1174,8 +1256,8 @@ class ConfigUpdate(BaseModel):
     stationary_threshold: float | None = None
     unattended_owner_proximity_px: float | None = None
     unattended_owner_grace_time: float | None = None
-    fall_aspect_ratio_threshold: float | None = None
     fall_persistence_time: float | None = None
+    fall_model_confidence_threshold: float | None = None
     restricted_zone_enabled: bool | None = None
     restricted_zone_min_dwell: float | None = None
     fight_detection_enabled: bool | None = None
@@ -1203,10 +1285,14 @@ def update_config(body: ConfigUpdate):
         )
     if body.unattended_owner_grace_time is not None:
         current_config["unattended_owner_grace_time"] = body.unattended_owner_grace_time
-    if body.fall_aspect_ratio_threshold is not None:
-        current_config["fall_aspect_ratio_threshold"] = body.fall_aspect_ratio_threshold
     if body.fall_persistence_time is not None:
-        current_config["fall_persistence_time"] = body.fall_persistence_time
+        current_config["fall_persistence_time"] = max(
+            0.2, min(5.0, float(body.fall_persistence_time))
+        )
+    if body.fall_model_confidence_threshold is not None:
+        current_config["fall_model_confidence_threshold"] = max(
+            0.05, min(0.95, float(body.fall_model_confidence_threshold))
+        )
     if body.restricted_zone_enabled is not None:
         current_config["restricted_zone_enabled"] = body.restricted_zone_enabled
     if body.restricted_zone_min_dwell is not None:
@@ -1281,6 +1367,8 @@ async def start_video():
         raise HTTPException(400, "No video uploaded yet")
     if not is_model_ready():
         raise HTTPException(503, "YOLO11m model is still loading, please wait")
+    if not is_fall_model_ready():
+        raise HTTPException(503, "Fall detection model is still loading, please wait")
 
     await _cancel_active()
     _reset_fps_window()
@@ -1307,6 +1395,8 @@ def get_video_status():
         **video_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "fall_model_ready": is_fall_model_ready(),
+        "fall_model_error": get_fall_model_error(),
     }
 
 
@@ -1372,6 +1462,8 @@ async def start_stream(body: StreamRequest):
     global _processing_mode, _active_task
     if not is_model_ready():
         raise HTTPException(503, "YOLO11m model not ready yet — please wait")
+    if not is_fall_model_ready():
+        raise HTTPException(503, "Fall detection model not ready yet — please wait")
     url = body.url.strip()
     if not url:
         raise HTTPException(400, "Stream URL is required")
@@ -1405,6 +1497,8 @@ def get_stream_status():
         **stream_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "fall_model_ready": is_fall_model_ready(),
+        "fall_model_error": get_fall_model_error(),
     }
 
 
@@ -1417,6 +1511,8 @@ def get_webcam_status():
         **webcam_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "fall_model_ready": is_fall_model_ready(),
+        "fall_model_error": get_fall_model_error(),
     }
 
 
@@ -1425,6 +1521,8 @@ async def start_webcam():
     global _processing_mode, _active_task
     if not is_model_ready():
         raise HTTPException(503, "YOLO11m model not ready yet — please wait")
+    if not is_fall_model_ready():
+        raise HTTPException(503, "Fall detection model not ready yet — please wait")
 
     await _cancel_active()
     _reset_fps_window()

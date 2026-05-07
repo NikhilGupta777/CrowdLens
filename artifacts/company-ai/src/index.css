@@ -68,6 +68,12 @@
 
 /* Dark surveillance theme */
 :root {
+  --app-bg: #060a12;
+  --app-sidebar-bg: linear-gradient(180deg, #080d1a 0%, #060a12 100%);
+  --app-text: #e2e8f0;
+  --app-text-muted: #64748b;
+  --app-card-bg: rgba(255,255,255,0.025);
+  --app-card-border: rgba(255,255,255,0.07);
   --button-outline: rgba(0,0,0, .10);
   --badge-outline: rgba(0,0,0, .05);
   --opaque-button-border-intensity: -8;
@@ -153,6 +159,12 @@
 }
 
 .dark {
+  --app-bg: #060a12;
+  --app-sidebar-bg: linear-gradient(180deg, #080d1a 0%, #060a12 100%);
+  --app-text: #e2e8f0;
+  --app-text-muted: #64748b;
+  --app-card-bg: rgba(255,255,255,0.025);
+  --app-card-border: rgba(255,255,255,0.07);
   --button-outline: rgba(255,255,255, .10);
   --badge-outline: rgba(255,255,255, .05);
   --opaque-button-border-intensity: 9;
@@ -213,6 +225,15 @@
   --shadow-2xl: 0px 20px 40px 0px rgba(0,0,0,0.9);
 }
 
+.light {
+  --app-bg: #f7f6f3;
+  --app-sidebar-bg: linear-gradient(180deg, #1d1a18 0%, #141210 100%);
+  --app-text: #171717;
+  --app-text-muted: #8b8681;
+  --app-card-bg: #ffffff;
+  --app-card-border: #e5e2de;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -221,11 +242,14 @@
   html {
     color-scheme: dark;
   }
+  html.light {
+    color-scheme: light;
+  }
 
   body {
     @apply font-sans antialiased bg-background text-foreground;
-    background: #060a12;
-    color: #e2e8f0;
+    background: var(--app-bg);
+    color: var(--app-text);
     overflow-x: hidden;
   }
 

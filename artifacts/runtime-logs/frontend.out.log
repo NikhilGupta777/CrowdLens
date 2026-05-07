@@ -1,13 +1,18 @@
 
 > @workspace/company-ai@0.0.0 dev C:\Users\g_n-n\Desktop\apps\8thSem Project\Gemini-Clone\artifacts\company-ai
-> vite --config vite.config.ts --host 0.0.0.0 "--" "--port" "3000"
+> vite --config vite.config.ts --host 0.0.0.0 "--host" "0.0.0.0"
 
-[2m3:54:17 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m Re-optimizing dependencies because vite config has changed
 
-  [32m[1mVITE[22m v7.3.1[39m  [2mready in [0m[1m1284[22m[2m[0m ms[22m
+  [32m[1mVITE[22m v7.3.1[39m  [2mready in [0m[1m866[22m[2m[0m ms[22m
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
-  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.1.10:[1m5173[22m/[39m
-C:\Users\g_n-n\Desktop\apps\8thSem Project\Gemini-Clone\artifacts\company-ai:
- ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/company-ai@0.0.0 dev: `vite --config vite.config.ts --host 0.0.0.0 "--" "--port" "3000"`
-Exit status 4294967295
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.1.7:[1m5173[22m/[39m
+[2m2:49:57 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css[22m
+[2m2:50:24 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m2:50:47 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/AlertsFeed.tsx[22m
+[2m2:54:59 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/Settings.tsx, /src/index.css[22m
+[2m4:37:22 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/context/DetectionContext.tsx[22m
+[2m4:39:03 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/SimulationCanvas.tsx[22m
+[2m5:37:42 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/Settings.tsx, /src/index.css[22m
+[2m5:54:52 am[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/Settings.tsx, /src/index.css[22m
+[2m12:48:53 pm[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/Settings.tsx, /src/index.css[22m

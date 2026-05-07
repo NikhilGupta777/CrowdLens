@@ -2,9 +2,10 @@ import { ReactNode, useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
 import {
   LayoutDashboard, History, Settings, Wifi, WifiOff,
-  Shield, ShieldAlert, ShieldX, Activity, Radio, Bot, Menu, X,
+  Shield, ShieldAlert, ShieldX, Activity, Bot, Menu, X, Moon, Sun, Aperture,
 } from "lucide-react";
 import { useIsMobile } from "../hooks/use-mobile";
+import { useTheme } from "../hooks/useTheme";
 
 interface Props {
   children: ReactNode;
@@ -13,47 +14,36 @@ interface Props {
 }
 
 const navItems = [
-  { path: "/",        label: "Live Dashboard", icon: LayoutDashboard, exact: true },
-  { path: "/history", label: "Alert History",  icon: History,         exact: false },
-  { path: "/ai",      label: "AI Assistant",   icon: Bot,             exact: false },
-  { path: "/settings",label: "Settings",       icon: Settings,        exact: false },
+  { path: "/", label: "Live Dashboard", icon: LayoutDashboard, exact: true },
+  { path: "/history", label: "Alert History", icon: History, exact: false },
+  { path: "/ai", label: "AI Assistant", icon: Bot, exact: false },
+  { path: "/settings", label: "Settings", icon: Settings, exact: false },
 ];
 
-function NavItem({ path, label, icon: Icon, exact, onClick }: (typeof navItems)[0] & { onClick?: () => void }) {
+function NavIcon({ path, label, icon: Icon, exact, onClick }: (typeof navItems)[0] & { onClick?: () => void }) {
   const [active] = useRoute(exact ? path : `${path}*`);
   return (
     <Link href={path} onClick={onClick}>
-      <div
+      <button
+        title={label}
         style={{
+          width: 56,
+          height: 56,
+          borderRadius: 14,
+          border: "none",
+          background: active ? "#34312f" : "transparent",
+          color: active ? "#f7f7f5" : "#8a8580",
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          borderRadius: 10,
+          justifyContent: "center",
           cursor: "pointer",
-          marginBottom: 2,
-          fontSize: 13.5,
-          fontWeight: active ? 600 : 400,
-          background: active
-            ? "linear-gradient(90deg, rgba(59,130,246,0.18) 0%, rgba(59,130,246,0.06) 100%)"
-            : "transparent",
-          color: active ? "#60a5fa" : "#64748b",
-          borderLeft: `3px solid ${active ? "#3b82f6" : "transparent"}`,
-          transition: "all 0.18s ease",
-          position: "relative",
-          overflow: "hidden",
+          boxShadow: active ? "0 8px 22px rgba(0,0,0,0.22)" : "none",
+          borderLeft: active ? "3px solid #0f8f83" : "3px solid transparent",
+          transition: "all 0.2s ease",
         }}
       >
-        {active && (
-          <div style={{
-            position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
-            background: "linear-gradient(180deg, #3b82f6, #6366f1)",
-            borderRadius: "0 2px 2px 0",
-          }} />
-        )}
-        <Icon size={16} style={{ flexShrink: 0 }} />
-        {label}
-      </div>
+        <Icon size={23} />
+      </button>
     </Link>
   );
 }
@@ -68,76 +58,64 @@ function Clock() {
     <span style={{ fontVariantNumeric: "tabular-nums" }}>
       {time.toLocaleString(undefined, {
         weekday: "short", month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour: "2-digit", minute: "2-digit",
       })}
     </span>
   );
 }
 
-function SidebarContent({ connected, onNavClick }: { connected: boolean; onNavClick?: () => void }) {
+function RailContent({ connected, onNavClick }: { connected: boolean; onNavClick?: () => void }) {
   return (
     <>
-      <div style={{ marginBottom: 36, paddingLeft: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 8,
-            background: "linear-gradient(135deg, #1d4ed8, #4f46e5)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 4px 15px rgba(59,130,246,0.4)",
-          }}>
-            <Radio size={16} color="#fff" />
-          </div>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: 2, lineHeight: 1 }}>
-              CROWD<span style={{ color: "#3b82f6" }}>LENS</span>
-            </div>
-          </div>
-        </div>
-        <div style={{ fontSize: 10, color: "#475569", letterSpacing: 2, fontWeight: 600, paddingLeft: 42 }}>
-          CAMPUS AI MONITOR
-        </div>
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 16,
+          background: "linear-gradient(135deg, #0ea5a3, #0f766e)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#ffffff",
+          fontWeight: 800,
+          fontSize: 24,
+          letterSpacing: 1,
+          boxShadow: "0 8px 26px rgba(20,184,166,0.28)",
+          marginBottom: 24,
+        }}
+      >
+        <Aperture size={27} strokeWidth={2.3} />
       </div>
 
-      <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 8, paddingLeft: 4 }}>
-        NAVIGATION
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", flex: 1 }}>
+        {navItems.map((item) => <NavIcon key={item.path} {...item} onClick={onNavClick} />)}
       </div>
 
-      <nav style={{ flex: 1 }}>
-        {navItems.map((item) => <NavItem key={item.path} {...item} onClick={onNavClick} />)}
-      </nav>
-
-      <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "16px 0" }} />
-
-      <div style={{
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.06)",
-        borderRadius: 10,
-        padding: "12px 14px",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          {connected
-            ? <Wifi size={14} color="#10b981" />
-            : <WifiOff size={14} color="#475569" />}
-          <span style={{
-            fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
-            color: connected ? "#10b981" : "#475569",
-          }}>
-            {connected ? "ENGINE CONNECTED" : "RECONNECTING…"}
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{
-            width: 6, height: 6, borderRadius: "50%",
-            background: connected ? "#10b981" : "#475569",
-            boxShadow: connected ? "0 0 8px #10b981" : "none",
-            animation: connected ? "pulse-dot 2s infinite" : "none",
-            flexShrink: 0,
-          }} />
-          <span style={{ fontSize: 10, color: "#475569" }}>
-            {connected ? "YOLO11m · SORT Tracking" : "Waiting for backend…"}
-          </span>
-        </div>
+      <div
+        style={{
+          width: 56,
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.10)",
+          background: "rgba(255,255,255,0.03)",
+          padding: "10px 0",
+          display: "flex",
+          justifyContent: "center",
+          marginBottom: 8,
+        }}
+        title={connected ? "Engine connected" : "Engine reconnecting"}
+      >
+        {connected ? <Wifi size={20} color="#10b981" /> : <WifiOff size={20} color="#64748b" />}
       </div>
+
+      <div
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+          background: connected ? "#4ade80" : "#64748b",
+          boxShadow: connected ? "0 0 10px #22c55e" : "none",
+        }}
+      />
     </>
   );
 }
@@ -145,164 +123,175 @@ function SidebarContent({ connected, onNavClick }: { connected: boolean; onNavCl
 export default function Layout({ children, connected, threatLevel }: Props) {
   const isMobile = useIsMobile();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
   const threatConfig = {
-    secure:   { color: "#10b981", text: "SYSTEM SECURE",   Icon: Shield,     glow: "#10b981" },
-    warning:  { color: "#f97316", text: "ALERT ACTIVE",    Icon: ShieldAlert, glow: "#f97316" },
-    critical: { color: "#ef4444", text: "THREAT DETECTED", Icon: ShieldX,    glow: "#ef4444" },
+    secure: { color: "#16a34a", text: "System Secure", Icon: Shield, glow: "#16a34a" },
+    warning: { color: "#ea580c", text: "Alert Active", Icon: ShieldAlert, glow: "#ea580c" },
+    critical: { color: "#dc2626", text: "Threat Detected", Icon: ShieldX, glow: "#dc2626" },
   }[threatLevel];
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#060a12", color: "#e2e8f0" }}>
-
-      {/* ── Desktop sidebar ── */}
+    <div style={{ display: "flex", minHeight: "100vh", background: "var(--app-bg)", color: "var(--app-text)" }}>
       {!isMobile && (
-        <aside style={{
-          width: 240,
-          minWidth: 240,
-          background: "linear-gradient(180deg, #080d1a 0%, #060a12 100%)",
-          borderRight: "1px solid rgba(255,255,255,0.06)",
-          display: "flex",
-          flexDirection: "column",
-          padding: "24px 14px 20px",
-          position: "fixed",
-          top: 0, left: 0,
-          height: "100vh",
-          zIndex: 100,
-        }}>
-          <SidebarContent connected={connected} />
+        <aside
+          style={{
+            width: 96,
+            minWidth: 96,
+            background: "var(--app-sidebar-bg)",
+            borderRight: "1px solid rgba(255,255,255,0.08)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            padding: "28px 0 24px",
+            position: "fixed",
+            top: 0,
+            left: 0,
+            height: "100vh",
+            zIndex: 100,
+          }}
+        >
+          <RailContent connected={connected} />
         </aside>
       )}
 
-      {/* ── Mobile drawer backdrop ── */}
       {isMobile && drawerOpen && (
         <div
           onClick={() => setDrawerOpen(false)}
-          style={{
-            position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
-            zIndex: 200, backdropFilter: "blur(2px)",
-          }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, backdropFilter: "blur(2px)" }}
         />
       )}
 
-      {/* ── Mobile drawer ── */}
       {isMobile && (
-        <aside style={{
-          position: "fixed",
-          top: 0, left: 0,
-          width: 240,
-          height: "100vh",
-          background: "linear-gradient(180deg, #080d1a 0%, #060a12 100%)",
-          borderRight: "1px solid rgba(255,255,255,0.06)",
-          display: "flex",
-          flexDirection: "column",
-          padding: "24px 14px 20px",
-          zIndex: 300,
-          transform: drawerOpen ? "translateX(0)" : "translateX(-100%)",
-          transition: "transform 0.25s ease",
-        }}>
+        <aside
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: 96,
+            height: "100vh",
+            background: "var(--app-sidebar-bg)",
+            borderRight: "1px solid rgba(255,255,255,0.08)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            padding: "28px 0 24px",
+            zIndex: 300,
+            transform: drawerOpen ? "translateX(0)" : "translateX(-100%)",
+            transition: "transform 0.25s ease",
+          }}
+        >
           <button
             onClick={() => setDrawerOpen(false)}
-            style={{
-              position: "absolute", top: 16, right: 16,
-              background: "none", border: "none", cursor: "pointer",
-              color: "#475569", padding: 4,
-            }}
+            style={{ position: "absolute", top: 8, right: 8, background: "none", border: "none", color: "#94a3b8", cursor: "pointer" }}
           >
-            <X size={18} />
+            <X size={16} />
           </button>
-          <SidebarContent connected={connected} onNavClick={() => setDrawerOpen(false)} />
+          <RailContent connected={connected} onNavClick={() => setDrawerOpen(false)} />
         </aside>
       )}
 
-      {/* ── Main ── */}
-      <div style={{
-        marginLeft: isMobile ? 0 : 240,
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        minHeight: "100vh",
-      }}>
-        {/* Header */}
-        <header style={{
-          background: "rgba(8,13,26,0.95)",
-          backdropFilter: "blur(12px)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
-          padding: isMobile ? "0 14px" : "0 28px",
-          height: 56,
+      <div
+        style={{
+          marginLeft: isMobile ? 0 : 96,
+          flex: 1,
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
-          gap: 12,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          flexDirection: "column",
+          minHeight: "100vh",
+        }}
+      >
+        <header
+          style={{
+            background: "var(--app-card-bg)",
+            borderBottom: "1px solid var(--app-card-border)",
+            padding: isMobile ? "0 14px" : "0 46px",
+            height: 84,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            position: "sticky",
+            top: 0,
+            zIndex: 50,
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             {isMobile && (
               <button
                 onClick={() => setDrawerOpen(true)}
-                style={{
-                  background: "none", border: "none", cursor: "pointer",
-                  color: "#64748b", padding: 4, display: "flex", alignItems: "center",
-                }}
+                style={{ background: "none", border: "none", color: "var(--app-text-muted)", cursor: "pointer", padding: 2 }}
               >
                 <Menu size={20} />
               </button>
             )}
-            {isMobile ? (
-              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 2 }}>
-                CROWD<span style={{ color: "#3b82f6" }}>LENS</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+              <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1, letterSpacing: 0 }}>
+                CROWDLENS
               </div>
-            ) : (
-              <div style={{ fontSize: 12, color: "#475569", fontVariantNumeric: "tabular-nums" }}>
-                <Clock />
-              </div>
-            )}
+              <div style={{ width: 1, height: 26, background: "var(--app-card-border)" }} />
+              <div style={{ fontSize: 14, color: "var(--app-text-muted)" }}>Campus AI Monitor</div>
+            </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 16, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 14 }}>
+            <button
+              onClick={toggleTheme}
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                border: "1px solid var(--app-card-border)",
+                background: "transparent",
+                color: "var(--app-text-muted)",
+                cursor: "pointer",
+              }}
+            >
+              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+            </button>
+
             {!isMobile && (
               <>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <Activity size={14} color="#3b82f6" style={{ opacity: 0.8 }} />
-                  <span style={{ fontSize: 11, color: "#475569" }}>Detection Engine</span>
+                <div style={{ fontSize: 14, color: "var(--app-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+                  <Clock />
                 </div>
-                <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.08)" }} />
+                <div style={{ width: 1, height: 24, background: "var(--app-card-border)" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <Activity size={16} color="var(--app-text-muted)" />
+                  <span style={{ fontSize: 13, color: "var(--app-text-muted)" }}>Detection Engine</span>
+                </div>
+                <div style={{ width: 1, height: 24, background: "var(--app-card-border)" }} />
               </>
             )}
 
-            <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 5 : 8 }}>
-              <threatConfig.Icon size={isMobile ? 13 : 15} color={threatConfig.color} />
-              {!isMobile && (
-                <span style={{
-                  fontSize: 12, fontWeight: 700, color: threatConfig.color,
-                  letterSpacing: 1,
-                  animation: threatLevel !== "secure" ? "blink 1.2s infinite" : "none",
-                  textShadow: threatLevel !== "secure" ? `0 0 12px ${threatConfig.glow}` : "none",
-                }}>
-                  {threatConfig.text}
-                </span>
-              )}
-              <div style={{
-                width: isMobile ? 7 : 8, height: isMobile ? 7 : 8, borderRadius: "50%",
-                background: threatConfig.color,
-                boxShadow: `0 0 8px ${threatConfig.glow}`,
-                animation: threatLevel !== "secure" ? "blink 1s infinite" : "none",
-              }} />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                border: `1px solid ${threatConfig.color}40`,
+                borderRadius: 17,
+                padding: "7px 22px",
+                background: `${threatConfig.color}10`,
+              }}
+            >
+              <div style={{ width: 10, height: 10, borderRadius: "50%", background: threatConfig.color }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: threatConfig.color }}>{threatConfig.text}</span>
             </div>
           </div>
         </header>
 
-        <main style={{ flex: 1, padding: isMobile ? "16px 14px" : "28px", background: "#060a12" }}>
+        <main style={{ flex: 1, padding: isMobile ? "18px 14px" : "40px 46px 34px", background: "var(--app-bg)" }}>
           {children}
         </main>
       </div>
-
     </div>
   );
 }

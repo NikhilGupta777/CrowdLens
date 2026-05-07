@@ -22,9 +22,12 @@ export interface Anomaly {
   avg_speed?: number;
   avg_pair_speed?: number;
   distance?: number;
-  aspect_ratio?: number;
+  confidence?: number;
+  owner_absent?: number;
   zone_id?: string;
   zone_name?: string;
+  note?: string;
+  bbox?: [number, number, number, number];
   position: [number, number] | null;
 }
 

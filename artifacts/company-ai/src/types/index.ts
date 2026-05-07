@@ -9,11 +9,12 @@ export interface AlertRecord {
     avg_pair_speed?: number;
     distance?: number;
     track_ids?: number[];
-    aspect_ratio?: number;
+    confidence?: number;
     owner_absent?: number;
     zone_id?: string;
     zone_name?: string;
     note?: string;
+    bbox?: [number, number, number, number];
     position: [number, number] | null;
   };
   timestamp: number;

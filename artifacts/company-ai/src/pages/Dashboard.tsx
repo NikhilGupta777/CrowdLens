@@ -5,8 +5,8 @@ import { useCamProcessor } from "../hooks/useCamProcessor";
 import { useLocalCamRelay } from "../hooks/useLocalCamRelay";
 import { useIsMobile } from "../hooks/use-mobile";
 import SimulationCanvas, { OverlayStyle } from "../components/SimulationCanvas";
-import StatsCards from "../components/StatsCards";
 import AlertsFeed from "../components/AlertsFeed";
+import { useStickyAnomalies } from "../hooks/useStickyAnomalies";
 import {
   Camera, Monitor, Cpu, Users, Package,
   AlertTriangle, Activity, Upload, Video, StopCircle,
@@ -22,6 +22,8 @@ interface VideoStatusData {
   current_frame: number;
   model_ready: boolean;
   model_error: string | null;
+  fall_model_ready?: boolean;
+  fall_model_error?: string | null;
   error: string | null;
 }
 
@@ -31,6 +33,8 @@ interface StreamStatusData {
   error: string | null;
   model_ready: boolean;
   model_error: string | null;
+  fall_model_ready?: boolean;
+  fall_model_error?: string | null;
 }
 
 interface WebcamStatusData {
@@ -38,6 +42,8 @@ interface WebcamStatusData {
   error: string | null;
   model_ready: boolean;
   model_error: string | null;
+  fall_model_ready?: boolean;
+  fall_model_error?: string | null;
 }
 
 interface RestrictedZone {
@@ -50,9 +56,9 @@ interface RestrictedZone {
 }
 
 const PILL_STYLE = {
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 10,
+  background: "var(--app-card-bg)",
+  border: "1px solid var(--app-card-border)",
+  borderRadius: 14,
   padding: "10px 18px",
   display: "flex",
   alignItems: "center",
@@ -62,6 +68,9 @@ const PILL_STYLE = {
 
 type ActivePanel = "none" | "video" | "stream" | "webcam";
 type SourceMode = "idle" | "webcam" | "video" | "stream";
+type CameraProfile = { id: string; name: string; url: string };
+const MAX_CAMERAS = 10;
+const CAMERA_PROFILE_KEY = "crowdlens_camera_profiles";
 
 const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone"]);
 
@@ -83,6 +92,17 @@ export default function Dashboard() {
   const [streamStatus, setStreamStatus] = useState<StreamStatusData | null>(null);
   const [streamUrl, setStreamUrl] = useState("");
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [cameraProfiles, setCameraProfiles] = useState<CameraProfile[]>(() => {
+    try {
+      const raw = localStorage.getItem(CAMERA_PROFILE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.slice(0, MAX_CAMERAS) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [cameraNameDraft, setCameraNameDraft] = useState("");
   const [captureInfo, setCaptureInfo] = useState<string | null>(null);
   const [capturingSnapshot, setCapturingSnapshot] = useState(false);
 
@@ -126,6 +146,7 @@ export default function Dashboard() {
 
   const tracks = frame?.tracks ?? [];
   const anomalies = frame?.anomalies ?? [];
+  const visibleAnomalies = useStickyAnomalies(anomalies, 8000);
   const stats = frame?.stats ?? null;
   const displayMode = (frame?.mode as SourceMode) ?? sourceMode;
 
@@ -213,6 +234,10 @@ export default function Dashboard() {
     navigator.mediaDevices.addEventListener?.("devicechange", enumerate);
     return () => navigator.mediaDevices.removeEventListener?.("devicechange", enumerate);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(CAMERA_PROFILE_KEY, JSON.stringify(cameraProfiles.slice(0, MAX_CAMERAS)));
+  }, [cameraProfiles]);
 
   useEffect(() => {
     const loadConfig = async () => {
@@ -419,6 +444,24 @@ export default function Dashboard() {
     }
   };
 
+  const addCameraProfile = () => {
+    const url = streamUrl.trim();
+    if (!url || cameraProfiles.length >= MAX_CAMERAS) return;
+    const name = (cameraNameDraft.trim() || `Camera ${cameraProfiles.length + 1}`).slice(0, 32);
+    const next: CameraProfile = { id: crypto.randomUUID(), name, url };
+    setCameraProfiles((prev) => [...prev, next].slice(0, MAX_CAMERAS));
+    setCameraNameDraft("");
+  };
+
+  const removeCameraProfile = (id: string) => {
+    setCameraProfiles((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const applyCameraProfile = (profile: CameraProfile) => {
+    setStreamUrl(profile.url);
+    setStreamError(null);
+  };
+
   const stopStream = async () => {
     await fetch("/api/stream/stop", { method: "POST" });
     setSourceMode("idle");
@@ -461,20 +504,16 @@ export default function Dashboard() {
   const isStreaming = streamStatus?.active === true || sourceMode === "stream";
   const modelReady = videoStatus?.model_ready ?? false;
   const modelError = videoStatus?.model_error ?? null;
+  const fallModelReady = videoStatus?.fall_model_ready ?? false;
+  const fallModelError = videoStatus?.fall_model_error ?? null;
+  const allModelsReady = modelReady && fallModelReady;
 
   const metricPills = [
     { icon: Users,         label: "PERSONS",      value: stats?.person_count ?? 0,  color: "#3b82f6" },
     { icon: Package,       label: "OBJECTS",       value: stats?.object_count ?? 0,  color: "#f59e0b" },
-    { icon: AlertTriangle, label: "ANOMALIES",     value: anomalies.length,          color: anomalies.length > 0 ? "#ef4444" : "#10b981" },
+    { icon: AlertTriangle, label: "ANOMALIES",     value: visibleAnomalies.length,   color: visibleAnomalies.length > 0 ? "#ef4444" : "#10b981" },
     { icon: Activity,      label: "ACTIVE TRACKS", value: tracks.length,             color: "#a855f7" },
   ];
-
-  const modeBadge = (() => {
-    if (displayMode === "video")  return { label: "VIDEO DETECT · YOLO", color: "#a855f7", icon: Video };
-    if (displayMode === "webcam") return { label: "WEBCAM · LIVE YOLO",  color: "#10b981", icon: Camera };
-    if (displayMode === "stream") return { label: "STREAM · LIVE YOLO",  color: "#f59e0b", icon: Radio };
-    return { label: "AWAITING INPUT",  color: "#475569", icon: Monitor };
-  })();
 
   return (
     <div>
@@ -493,21 +532,21 @@ export default function Dashboard() {
       />
 
       {/* ── Header ── */}
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ marginBottom: isMobile ? 12 : 14 }}>
-          <h1 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: "#f1f5f9", letterSpacing: -0.5, marginBottom: 4 }}>
-            Live Surveillance Dashboard
+      <div style={{ marginBottom: 26 }}>
+        <div style={{ marginBottom: isMobile ? 18 : 28 }}>
+          <h1 style={{ fontSize: isMobile ? 22 : 30, fontWeight: 800, color: "var(--app-text)", letterSpacing: 0, margin: "0 0 8px" }}>
+            Live Surveillance
           </h1>
-          <p style={{ color: "#475569", fontSize: isMobile ? 11 : 13 }}>
+          <p style={{ color: "var(--app-text-muted)", fontSize: isMobile ? 13 : 18, margin: 0 }}>
             {displayMode === "video"  && "YOLO11m + SORT — processing uploaded video"}
             {displayMode === "webcam" && "YOLO11m + SORT — real-time webcam detection"}
             {displayMode === "stream" && `YOLO11m + SORT — live stream: ${streamStatus?.url ?? ""}`}
-            {(displayMode === "idle" || !displayMode) && "Select a source — webcam, video upload, or live stream"}
+            {(displayMode === "idle" || !displayMode) && "Monitor your campus feeds in real time"}
           </p>
         </div>
 
         <div style={{
-          display: "flex", alignItems: "center", gap: 8,
+          display: "flex", alignItems: "center", gap: 12,
           overflowX: isMobile ? "auto" : "visible",
           flexWrap: isMobile ? "nowrap" : "wrap",
           paddingBottom: isMobile ? 4 : 0,
@@ -517,9 +556,9 @@ export default function Dashboard() {
           <button
             onClick={() => setSoundEnabled(v => !v)}
             style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)",
-              color: soundEnabled ? "#10b981" : "#475569", cursor: "pointer", fontSize: 12, fontWeight: 600,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 134, padding: "10px 18px", borderRadius: 10,
+              border: soundEnabled ? "1px solid #b8e7df" : "1px solid var(--app-card-border)", background: soundEnabled ? "#ecfbf8" : "var(--app-card-bg)",
+              color: soundEnabled ? "#0f8f83" : "var(--app-text-muted)", cursor: "pointer", fontSize: 18, fontWeight: 600,
             }}
           >
             {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
@@ -538,11 +577,11 @@ export default function Dashboard() {
                   : "Enable push notifications"
               }
               style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)",
-                color: notifEnabled ? "#f59e0b" : "#475569",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 134, padding: "10px 18px", borderRadius: 10,
+                border: "1px solid var(--app-card-border)", background: "var(--app-card-bg)",
+                color: notifEnabled ? "#f59e0b" : "var(--app-text-muted)",
                 cursor: notifPermission === "denied" ? "not-allowed" : "pointer",
-                fontSize: 12, fontWeight: 600, opacity: notifPermission === "denied" ? 0.5 : 1,
+                fontSize: 18, fontWeight: 600, opacity: notifPermission === "denied" ? 0.5 : 1,
               }}
             >
               {notifEnabled ? <Bell size={14} /> : <BellOff size={14} />}
@@ -558,12 +597,12 @@ export default function Dashboard() {
             }}
             disabled={isVideoProcessing || isStreaming}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 136, padding: "10px 18px", borderRadius: 10,
               border: "1px solid", cursor: (isVideoProcessing || isStreaming) ? "not-allowed" : "pointer",
-              fontSize: 12, fontWeight: 600, transition: "all 0.2s",
-              borderColor: sourceMode === "webcam" ? "#10b981" : activePanel === "webcam" ? "#10b981" : "rgba(255,255,255,0.12)",
-              background: sourceMode === "webcam" ? "rgba(16,185,129,0.12)" : activePanel === "webcam" ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.04)",
-              color: sourceMode === "webcam" ? "#10b981" : activePanel === "webcam" ? "#10b981" : "#94a3b8",
+              fontSize: 18, fontWeight: 600, transition: "all 0.2s",
+              borderColor: sourceMode === "webcam" ? "#0f8f83" : activePanel === "webcam" ? "#0f8f83" : "var(--app-card-border)",
+              background: sourceMode === "webcam" ? "#ecfbf8" : activePanel === "webcam" ? "#f3fbf9" : "var(--app-card-bg)",
+              color: sourceMode === "webcam" ? "#0f8f83" : activePanel === "webcam" ? "#0f8f83" : "var(--app-text-muted)",
               opacity: (isVideoProcessing || isStreaming) ? 0.4 : 1,
             }}
           >
@@ -571,78 +610,68 @@ export default function Dashboard() {
               webcamStatus?.active
                 ? <><div style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981", boxShadow: "0 0 6px #10b981", animation: "pulse-dot 2s infinite" }} /> YOLO LIVE</>
                 : <><Loader size={14} style={{ animation: "spin 1s linear infinite" }} /> YOLO Starting…</>
-            ) : <><Camera size={14} /> Live Webcam</>}
+            ) : <><Camera size={14} /> Webcam</>}
           </button>
 
           {/* Video upload button */}
           <button
             onClick={() => setActivePanel(p => p === "video" ? "none" : "video")}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8,
-              border: "1px solid", cursor: "pointer", fontSize: 12, fontWeight: 600,
-              borderColor: activePanel === "video" || isVideoProcessing ? "#a855f7" : "rgba(255,255,255,0.12)",
-              background: activePanel === "video" || isVideoProcessing ? "rgba(168,85,247,0.12)" : "rgba(255,255,255,0.04)",
-              color: activePanel === "video" || isVideoProcessing ? "#a855f7" : "#94a3b8",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 126, padding: "10px 18px", borderRadius: 10,
+              border: "1px solid", cursor: "pointer", fontSize: 18, fontWeight: 600,
+              borderColor: activePanel === "video" || isVideoProcessing ? "#a855f7" : "var(--app-card-border)",
+              background: activePanel === "video" || isVideoProcessing ? "rgba(168,85,247,0.12)" : "var(--app-card-bg)",
+              color: activePanel === "video" || isVideoProcessing ? "#a855f7" : "var(--app-text-muted)",
             }}
           >
             <Video size={14} />
-            {isVideoProcessing ? "Video Running" : "Upload Video"}
+            {isVideoProcessing ? "Video Running" : "Upload"}
           </button>
 
           {/* Stream button */}
           <button
             onClick={() => setActivePanel(p => p === "stream" ? "none" : "stream")}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8,
-              border: "1px solid", cursor: "pointer", fontSize: 12, fontWeight: 600,
-              borderColor: activePanel === "stream" || isStreaming ? "#f59e0b" : "rgba(255,255,255,0.12)",
-              background: activePanel === "stream" || isStreaming ? "rgba(245,158,11,0.1)" : "rgba(255,255,255,0.04)",
-              color: activePanel === "stream" || isStreaming ? "#f59e0b" : "#94a3b8",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 126, padding: "10px 18px", borderRadius: 10,
+              border: "1px solid", cursor: "pointer", fontSize: 18, fontWeight: 600,
+              borderColor: activePanel === "stream" || isStreaming ? "#f59e0b" : "var(--app-card-border)",
+              background: activePanel === "stream" || isStreaming ? "rgba(245,158,11,0.1)" : "var(--app-card-bg)",
+              color: activePanel === "stream" || isStreaming ? "#f59e0b" : "var(--app-text-muted)",
             }}
           >
             <Radio size={14} />
-            {isStreaming ? "Stream Active" : "Live Stream"}
+            {isStreaming ? "Stream Active" : "Stream"}
           </button>
 
           <button
             onClick={captureSnapshot}
             disabled={capturingSnapshot || sourceMode === "idle"}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.12)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 146, padding: "10px 18px", borderRadius: 10,
+              border: "1px solid var(--app-card-border)",
               cursor: (capturingSnapshot || sourceMode === "idle") ? "not-allowed" : "pointer",
-              fontSize: 12, fontWeight: 600,
-              background: "rgba(59,130,246,0.12)", color: "#60a5fa",
+              fontSize: 18, fontWeight: 600,
+              background: "#eef5ff", color: "#9fc8ff",
               opacity: (capturingSnapshot || sourceMode === "idle") ? 0.5 : 1,
             }}
           >
             {capturingSnapshot ? <Loader size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Camera size={14} />}
-            Capture Snapshot
+            Snapshot
           </button>
 
           <button
             onClick={toggleRestrictedZone}
             style={{
-              display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.12)", cursor: "pointer",
-              fontSize: 12, fontWeight: 700,
-              background: zoneEnabled ? "rgba(234,179,8,0.12)" : "rgba(255,255,255,0.04)",
-              color: zoneEnabled ? "#eab308" : "#64748b",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 130, padding: "10px 18px", borderRadius: 10,
+              border: zoneEnabled ? "1px solid #ef4444" : "1px solid var(--app-card-border)", cursor: "pointer",
+              fontSize: 18, fontWeight: 700,
+              background: zoneEnabled ? "#fff5f3" : "var(--app-card-bg)",
+              color: zoneEnabled ? "#dc2626" : "var(--app-text-muted)",
             }}
           >
             <Monitor size={14} />
             {zoneEnabled ? "Zone ON" : "Zone OFF"}
           </button>
-
-          {/* Mode badge */}
-          <div style={{
-            padding: "8px 14px", borderRadius: 8, border: `1px solid ${modeBadge.color}33`,
-            background: `${modeBadge.color}10`, display: "flex", alignItems: "center",
-            gap: 6, fontSize: 11, color: modeBadge.color, fontWeight: 700,
-          }}>
-            <modeBadge.icon size={13} />
-            {modeBadge.label}
-          </div>
         </div>
       </div>
 
@@ -677,13 +706,15 @@ export default function Dashboard() {
 
           {/* Model status */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, fontSize: 11 }}>
-            {modelReady ? (
-              <><CheckCircle size={13} color="#10b981" /><span style={{ color: "#10b981" }}>YOLO11m ready</span></>
+            {allModelsReady ? (
+              <><CheckCircle size={13} color="#10b981" /><span style={{ color: "#10b981" }}>YOLO11m + Fall model ready</span></>
+            ) : fallModelError ? (
+              <><X size={13} color="#ef4444" /><span style={{ color: "#ef4444" }}>Fall model error: {fallModelError}</span></>
             ) : modelError ? (
               <><X size={13} color="#ef4444" /><span style={{ color: "#ef4444" }}>Model error: {modelError}</span></>
             ) : (
               <><Loader size={13} color="#f59e0b" style={{ animation: "spin 1s linear infinite" }} />
-              <span style={{ color: "#f59e0b" }}>Loading YOLO11m (~10 MB, one-time download)…</span></>
+              <span style={{ color: "#f59e0b" }}>Loading detection models…</span></>
             )}
           </div>
 
@@ -743,10 +774,10 @@ export default function Dashboard() {
 
           <div style={{ display: "flex", gap: 10 }}>
             {!isVideoProcessing && hasUpload && (
-              <button onClick={startVideoProcessing} disabled={!modelReady} style={{
+              <button onClick={startVideoProcessing} disabled={!allModelsReady} style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "8px 18px", borderRadius: 8,
-                border: "none", cursor: modelReady ? "pointer" : "not-allowed",
-                background: modelReady ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "#1e1b4b",
+                border: "none", cursor: allModelsReady ? "pointer" : "not-allowed",
+                background: allModelsReady ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "#1e1b4b",
                 color: "#fff", fontWeight: 700, fontSize: 13,
               }}>
                 <Video size={14} /> Start Real Detection
@@ -926,13 +957,15 @@ export default function Dashboard() {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 11 }}>
-            {streamStatus?.model_ready ? (
-              <><CheckCircle size={13} color="#10b981" /><span style={{ color: "#10b981" }}>YOLO11m ready</span></>
+            {(streamStatus?.model_ready && streamStatus?.fall_model_ready) ? (
+              <><CheckCircle size={13} color="#10b981" /><span style={{ color: "#10b981" }}>YOLO11m + Fall model ready</span></>
+            ) : streamStatus?.fall_model_error ? (
+              <><X size={13} color="#ef4444" /><span style={{ color: "#ef4444" }}>Fall model error: {streamStatus.fall_model_error}</span></>
             ) : streamStatus?.model_error ? (
               <><X size={13} color="#ef4444" /><span style={{ color: "#ef4444" }}>Model error: {streamStatus.model_error}</span></>
             ) : (
               <><Loader size={13} color="#f59e0b" style={{ animation: "spin 1s linear infinite" }} />
-              <span style={{ color: "#f59e0b" }}>Loading YOLO11m…</span></>
+              <span style={{ color: "#f59e0b" }}>Loading detection models…</span></>
             )}
           </div>
 
@@ -979,10 +1012,10 @@ export default function Dashboard() {
               />
             </div>
             {!isStreaming ? (
-              <button onClick={startStream} disabled={!streamStatus?.model_ready} style={{
+              <button onClick={startStream} disabled={!(streamStatus?.model_ready && streamStatus?.fall_model_ready)} style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", borderRadius: 8,
-                border: "none", cursor: streamStatus?.model_ready ? "pointer" : "not-allowed",
-                background: streamStatus?.model_ready ? "linear-gradient(135deg,#d97706,#f59e0b)" : "#1c1a10",
+                border: "none", cursor: (streamStatus?.model_ready && streamStatus?.fall_model_ready) ? "pointer" : "not-allowed",
+                background: (streamStatus?.model_ready && streamStatus?.fall_model_ready) ? "linear-gradient(135deg,#d97706,#f59e0b)" : "#1c1a10",
                 color: "#fff", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap",
               }}>
                 <Radio size={14} /> Connect
@@ -997,6 +1030,109 @@ export default function Dashboard() {
                 <StopCircle size={14} /> Disconnect
               </button>
             )}
+          </div>
+
+          <div
+            style={{
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 10,
+              padding: 12,
+              marginBottom: 12,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontSize: 10, color: "#94a3b8", letterSpacing: 1, fontWeight: 700 }}>
+                CAMERA WALL ({cameraProfiles.length}/{MAX_CAMERAS})
+              </div>
+              <button
+                onClick={addCameraProfile}
+                disabled={!streamUrl.trim() || cameraProfiles.length >= MAX_CAMERAS}
+                style={{
+                  border: "1px solid rgba(59,130,246,0.35)",
+                  background: "rgba(59,130,246,0.14)",
+                  color: "#60a5fa",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "4px 8px",
+                  cursor: "pointer",
+                }}
+              >
+                Save Camera
+              </button>
+            </div>
+            <input
+              type="text"
+              value={cameraNameDraft}
+              onChange={(e) => setCameraNameDraft(e.target.value)}
+              placeholder="Camera name (optional)"
+              style={{
+                width: "100%",
+                marginBottom: 8,
+                padding: "7px 9px",
+                borderRadius: 7,
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.03)",
+                color: "#e2e8f0",
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+              {cameraProfiles.map((profile) => (
+                <div
+                  key={profile.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    border: "1px solid rgba(148,163,184,0.2)",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                    background: "rgba(2,6,23,0.35)",
+                  }}
+                >
+                  <button
+                    onClick={() => applyCameraProfile(profile)}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      color: "#cbd5e1",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{profile.name}</div>
+                    <div style={{ fontSize: 10, color: "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {profile.url}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => removeCameraProfile(profile.id)}
+                    style={{
+                      border: "none",
+                      background: "rgba(239,68,68,0.18)",
+                      color: "#f87171",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {cameraProfiles.length === 0 && (
+                <div style={{ fontSize: 11, color: "#64748b" }}>
+                  Save up to 10 camera URLs here and switch quickly for operations.
+                </div>
+              )}
+            </div>
           </div>
 
           {(streamError || streamStatus?.error) && (
@@ -1017,15 +1153,15 @@ export default function Dashboard() {
       {/* ── Main grid ── */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: isMobile ? "1fr" : "1fr 310px",
-        gap: isMobile ? 14 : 20,
+        gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 1fr) 340px",
+        gap: isMobile ? 14 : 28,
         alignItems: "start",
       }}>
         <div>
           <div style={{
-            borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden",
-            background: "#060a12", position: "relative",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(59,130,246,0.1)",
+            borderRadius: 22, border: "1px solid #d9d6d2", overflow: "hidden",
+            background: "#141414", position: "relative",
+            boxShadow: "0 18px 45px rgba(22,20,18,0.12)",
           }}>
             {!connected && (
               <div style={{
@@ -1062,15 +1198,15 @@ export default function Dashboard() {
           <div style={{
             display: "grid",
             gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)",
-            gap: isMobile ? 8 : 10,
-            marginTop: 10,
+            gap: isMobile ? 8 : 12,
+            marginTop: 16,
           }}>
             {metricPills.map(({ icon: Icon, label, value, color }) => (
               <div key={label} style={{ ...PILL_STYLE, flex: "unset" }}>
                 <Icon size={16} color={color} style={{ flexShrink: 0 }} />
                 <div>
                   <div style={{ fontSize: 22, fontWeight: 800, color, lineHeight: 1.2 }}>{value}</div>
-                  <div style={{ fontSize: 9, color: "#475569", fontWeight: 700, letterSpacing: 1.5, marginTop: 2 }}>
+                  <div style={{ fontSize: 9, color: "var(--app-text-muted)", fontWeight: 700, letterSpacing: 1.5, marginTop: 2 }}>
                     {label}
                   </div>
                 </div>
@@ -1081,11 +1217,11 @@ export default function Dashboard() {
 
         {/* Right sidebar */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <StatsCards stats={stats} anomalyCount={anomalies.length} />
-          <AlertsFeed anomalies={anomalies} />
+          <AlertsFeed anomalies={visibleAnomalies} />
         </div>
       </div>
 
     </div>
   );
 }
+

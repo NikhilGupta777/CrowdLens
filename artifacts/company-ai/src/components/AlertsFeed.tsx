@@ -23,11 +23,10 @@ interface Props {
 export default function AlertsFeed({ anomalies }: Props) {
   return (
     <div style={{
-      background: "rgba(255,255,255,0.025)",
-      border: "1px solid rgba(255,255,255,0.07)",
+      background: "var(--app-card-bg)",
+      border: "1px solid var(--app-card-border)",
       borderRadius: 14,
       padding: "18px",
-      flex: 1,
     }}>
       <div style={{
         display: "flex",
@@ -37,8 +36,8 @@ export default function AlertsFeed({ anomalies }: Props) {
         paddingBottom: 12,
         borderBottom: "1px solid rgba(255,255,255,0.06)",
       }}>
-        <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700 }}>
-          ACTIVE INCIDENTS
+        <div style={{ fontSize: 9, color: "var(--app-text-muted)", letterSpacing: 2, fontWeight: 700 }}>
+          RECENT INCIDENTS
         </div>
         {anomalies.length > 0 && (
           <div style={{
@@ -50,7 +49,7 @@ export default function AlertsFeed({ anomalies }: Props) {
             borderRadius: 20,
             letterSpacing: 1,
           }}>
-            {anomalies.length} ACTIVE
+            {anomalies.length} RECENT
           </div>
         )}
       </div>
@@ -71,8 +70,8 @@ export default function AlertsFeed({ anomalies }: Props) {
           }}>
             <span style={{ fontSize: 20 }}>✓</span>
           </div>
-          <div style={{ color: "#64748b", fontSize: 12, fontWeight: 600 }}>No active threats</div>
-          <div style={{ color: "#334155", fontSize: 11 }}>All zones nominal</div>
+          <div style={{ color: "var(--app-text)", fontSize: 12, fontWeight: 600 }}>No recent threats</div>
+          <div style={{ color: "var(--app-text-muted)", fontSize: 11 }}>All zones nominal</div>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -148,8 +147,10 @@ export default function AlertsFeed({ anomalies }: Props) {
                   {a.duration !== undefined && (
                     <span style={{ fontSize: 10, color: "#64748b" }}>{a.duration}s elapsed</span>
                   )}
-                  {a.aspect_ratio !== undefined && (
-                    <span style={{ fontSize: 10, color: "#dc2626", fontWeight: 600 }}>ratio {a.aspect_ratio}</span>
+                  {a.confidence !== undefined && (
+                    <span style={{ fontSize: 10, color: "#dc2626", fontWeight: 600 }}>
+                      conf {(a.confidence * 100).toFixed(0)}%
+                    </span>
                   )}
                   {a.zone_name && (
                     <span style={{ fontSize: 10, color: "#eab308", fontWeight: 600 }}>{a.zone_name}</span>
@@ -158,6 +159,9 @@ export default function AlertsFeed({ anomalies }: Props) {
                     <span style={{ fontSize: 10, color: "#475569", fontFamily: "monospace" }}>
                       ({Math.round(a.position[0])}, {Math.round(a.position[1])})
                     </span>
+                  )}
+                  {a.note && (
+                    <span style={{ fontSize: 10, color: "#64748b" }}>{a.note}</span>
                   )}
                 </div>
               </div>
@@ -168,3 +172,4 @@ export default function AlertsFeed({ anomalies }: Props) {
     </div>
   );
 }
+
