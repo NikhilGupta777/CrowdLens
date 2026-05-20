@@ -12,11 +12,13 @@ import torch
 
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 
-from backend.config import COCO_CLASSES, CONFIDENCE_THRESHOLD, YOLO_MODEL
+from backend.config import COCO_CLASSES, CONFIDENCE_THRESHOLD, YOLO_MODEL, UNATTENDED_CLASSES
 
 MODEL_PATH     = YOLO_MODEL                           # e.g. "yolo11m.pt"
 ONNX_PATH      = MODEL_PATH.replace(".pt", ".onnx")   # e.g. "yolo11m.onnx"
 TARGET_CLASSES = set(COCO_CLASSES.keys())
+BAGGAGE_CLASSES = set(UNATTENDED_CLASSES)
+BAGGAGE_TRACK_CLASS_ID = 26
 
 _model        = None
 _model_ready  = False
@@ -42,6 +44,62 @@ def _try_warmup(model, label: str, device: str | None = None):
     model(dummy, **kwargs)
     print(f"[detector] Warm-up OK → {label}")
     return True
+
+
+def _box_area(box: list[float]) -> float:
+    return max(1.0, float((box[2] - box[0]) * (box[3] - box[1])))
+
+
+def _iou(box_a: list[float], box_b: list[float]) -> float:
+    x1 = max(box_a[0], box_b[0])
+    y1 = max(box_a[1], box_b[1])
+    x2 = min(box_a[2], box_b[2])
+    y2 = min(box_a[3], box_b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if inter <= 0:
+        return 0.0
+    return inter / (_box_area(box_a) + _box_area(box_b) - inter + 1e-6)
+
+
+def _center_distance(box_a: list[float], box_b: list[float]) -> float:
+    ax = (box_a[0] + box_a[2]) / 2.0
+    ay = (box_a[1] + box_a[3]) / 2.0
+    bx = (box_b[0] + box_b[2]) / 2.0
+    by = (box_b[1] + box_b[3]) / 2.0
+    return float(np.hypot(ax - bx, ay - by))
+
+
+def _same_baggage_object(box_a: list[float], box_b: list[float]) -> bool:
+    if _iou(box_a, box_b) >= 0.20:
+        return True
+    max_diag = max(np.sqrt(_box_area(box_a)), np.sqrt(_box_area(box_b)))
+    return _center_distance(box_a, box_b) <= max(45.0, 0.65 * max_diag)
+
+
+def _dedupe_and_canonicalize_baggage(detections: list[dict]) -> list[dict]:
+    """
+    YOLO COCO often labels the same bag as backpack/handbag/suitcase in the
+    same frame or flips between those labels across frames. The app only needs
+    a stable baggage object for unattended-object logic, so collapse overlapping
+    baggage detections and track them under one canonical class.
+    """
+    non_baggage = [d for d in detections if d["class_id"] not in BAGGAGE_CLASSES]
+    baggage = sorted(
+        (d for d in detections if d["class_id"] in BAGGAGE_CLASSES),
+        key=lambda d: d["confidence"],
+        reverse=True,
+    )
+
+    kept: list[dict] = []
+    for candidate in baggage:
+        if any(_same_baggage_object(candidate["bbox"], existing["bbox"]) for existing in kept):
+            continue
+        merged = dict(candidate)
+        merged["class_id"] = BAGGAGE_TRACK_CLASS_ID
+        merged["class_name"] = "baggage"
+        kept.append(merged)
+
+    return non_baggage + kept
 
 
 def _download_model():
@@ -175,4 +233,4 @@ class YOLOv8Detector:
                 "class_id":   class_id,
                 "class_name": COCO_CLASSES.get(class_id, "unknown"),
             })
-        return detections
+        return _dedupe_and_canonicalize_baggage(detections)

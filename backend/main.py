@@ -5,6 +5,8 @@ import json
 import math
 import os
 import queue
+import shutil
+import subprocess
 import tempfile
 import time
 import threading
@@ -109,9 +111,31 @@ _start_time = time.time()
 _frame_times: deque = deque(maxlen=30)
 _alert_cooldowns: dict = {}
 _COOLDOWN_MAX_AGE = 300.0  # seconds — entries older than this are evicted
+_email_cooldowns: dict = {}
+_EMAIL_COOLDOWN_SECS = float(os.environ.get("ALERT_EMAIL_COOLDOWN_SECS", "45"))
+_ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "2022a1r090@mietjammu.in")
+_ALERT_EMAIL_FROM = os.environ.get("ALERT_EMAIL_FROM", _ALERT_EMAIL_TO).strip()
+_EMAIL_COOLDOWN_PATH = os.path.join(tempfile.gettempdir(), "crowdlens_email_cooldowns.json")
+_EMAIL_COOLDOWN_LOCK_PATH = f"{_EMAIL_COOLDOWN_PATH}.lock"
+_AWS_CLI_BIN = (
+    os.environ.get("AWS_CLI_BIN", "").strip()
+    or shutil.which("aws")
+    or r"C:\Program Files\Amazon\AWSCLIV2\aws.exe"
+)
+_email_metrics = {
+    "attempts": 0,
+    "sent": 0,
+    "suppressed": 0,
+    "failed": 0,
+    "last_error": None,
+    "last_message_id": None,
+    "last_attempt_at": None,
+    "last_sent_at": None,
+}
 
 # Thread pool for async DB writes — avoids spawning a new thread per alert.
 _db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="crowdlens_db")
+_notify_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="crowdlens_notify")
 _alert_id_counter = 0
 _archive_dir = os.path.join(os.path.dirname(__file__), "archive")
 _archive_retention_seconds = 7 * 24 * 60 * 60
@@ -188,6 +212,188 @@ def _should_record_alert(anomaly: dict, now: float) -> bool:
         _alert_cooldowns[key] = now
         return True
     return False
+
+
+def _should_send_email(entry: dict, now: float) -> bool:
+    anomaly = entry.get("anomaly", {}) if isinstance(entry, dict) else {}
+    alert_type = str(anomaly.get("type", "unknown"))
+    source = str(entry.get("source", "unknown"))
+    # Keep dedupe coarse and stable so one real-world incident does not spam
+    # email because of track-id swaps, bbox jitter, or multiple backend processes.
+    key = f"{_ALERT_EMAIL_TO}|{source}|{alert_type}"
+
+    lock_fd = None
+    lock_started = time.time()
+    while lock_fd is None:
+        try:
+            lock_fd = os.open(
+                _EMAIL_COOLDOWN_LOCK_PATH,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            )
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(_EMAIL_COOLDOWN_LOCK_PATH) > 10:
+                    os.unlink(_EMAIL_COOLDOWN_LOCK_PATH)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.time() - lock_started > 3:
+                return False
+            time.sleep(0.02)
+
+    try:
+        shared_cooldowns = {}
+        try:
+            with open(_EMAIL_COOLDOWN_PATH, "r", encoding="utf-8") as f:
+                shared_cooldowns = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            shared_cooldowns = {}
+
+        # Drop old keys so the local demo file does not grow forever.
+        max_age = max(_EMAIL_COOLDOWN_SECS * 4, 300.0)
+        shared_cooldowns = {
+            k: float(v)
+            for k, v in shared_cooldowns.items()
+            if now - float(v) <= max_age
+        }
+
+        last = float(shared_cooldowns.get(key, 0.0))
+        if now - last < _EMAIL_COOLDOWN_SECS:
+            _email_cooldowns[key] = last
+            _email_metrics["suppressed"] += 1
+            return False
+
+        shared_cooldowns[key] = now
+        _email_cooldowns[key] = now
+        with open(_EMAIL_COOLDOWN_PATH, "w", encoding="utf-8") as f:
+            json.dump(shared_cooldowns, f)
+        return True
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+        try:
+            os.unlink(_EMAIL_COOLDOWN_LOCK_PATH)
+        except FileNotFoundError:
+            pass
+
+
+def _send_alert_email_sync(entry: dict) -> None:
+    _email_metrics["attempts"] += 1
+    _email_metrics["last_attempt_at"] = time.time()
+    if not _ALERT_EMAIL_TO or not _ALERT_EMAIL_FROM:
+        _email_metrics["failed"] += 1
+        _email_metrics["last_error"] = "email from/to not configured"
+        return
+    if not _AWS_CLI_BIN or not os.path.exists(_AWS_CLI_BIN):
+        print("[notify-email] aws cli binary not found; set AWS_CLI_BIN env var.")
+        _email_metrics["failed"] += 1
+        _email_metrics["last_error"] = "aws cli binary not found"
+        return
+    anomaly = entry.get("anomaly", {})
+    alert_type = str(anomaly.get("type", "alert")).replace("_", " ").title()
+    severity = "HIGH" if anomaly.get("type") in {"fall_detected", "fight_suspected", "restricted_zone"} else "MEDIUM"
+    subject = f"[CrowdLens Campus Alert] {alert_type} - {severity}"
+    position = anomaly.get("position")
+    details = []
+    if anomaly.get("track_id") is not None:
+        details.append(f"Track ID: #{anomaly.get('track_id')}")
+    if position:
+        details.append(f"Position: ({int(position[0])}, {int(position[1])})")
+    details.append(f"Source: {str(entry.get('source', 'unknown')).upper()}")
+    details.append(f"Time (UTC): {entry.get('iso', '')}")
+    if entry.get("id") is not None:
+        details.append(f"Alert ID: {entry.get('id')}")
+
+    body = (
+        "CrowdLens Campus AI Monitor - Alert Notification\n\n"
+        f"Alert Type : {alert_type}\n"
+        f"Severity   : {severity}\n"
+        + "\n".join(details)
+        + "\n\nThis is an automated notification from your CrowdLens project."
+    )
+    html_items = "".join([f"<li>{d}</li>" for d in details])
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color:#111827;">
+        <div style="max-width:640px; margin:0 auto; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden;">
+          <div style="background:#0f172a; color:white; padding:14px 18px; font-size:18px; font-weight:700;">
+            CrowdLens Campus AI Monitor
+          </div>
+          <div style="padding:18px;">
+            <p style="margin:0 0 8px 0; font-size:16px;"><strong>Alert:</strong> {alert_type}</p>
+            <p style="margin:0 0 14px 0; font-size:15px;"><strong>Severity:</strong> {severity}</p>
+            <ul style="padding-left:18px; margin:0 0 14px 0;">
+              {html_items}
+            </ul>
+            <p style="margin:0; color:#4b5563; font-size:13px;">
+              This is an automated notification from your CrowdLens project.
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+    """.strip()
+    payload = {
+        "FromEmailAddress": _ALERT_EMAIL_FROM,
+        "Destination": {"ToAddresses": [_ALERT_EMAIL_TO]},
+        "Content": {
+            "Simple": {
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": body, "Charset": "UTF-8"},
+                    "Html": {"Data": html_body, "Charset": "UTF-8"},
+                },
+            }
+        },
+    }
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8") as tmp:
+        json.dump(payload, tmp)
+        payload_path = tmp.name
+    try:
+        result = subprocess.run(
+            [_AWS_CLI_BIN, "sesv2", "send-email", "--region", "us-east-1", "--cli-input-json", f"file://{payload_path}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.stdout:
+            print(f"[notify-email] sent: {result.stdout.strip()}")
+            try:
+                out = json.loads(result.stdout)
+                _email_metrics["last_message_id"] = out.get("MessageId")
+            except Exception:
+                pass
+        _email_metrics["sent"] += 1
+        _email_metrics["last_sent_at"] = time.time()
+        _email_metrics["last_error"] = None
+    except Exception as e:
+        print(f"[notify-email] send failed: {e}")
+        _email_metrics["failed"] += 1
+        _email_metrics["last_error"] = str(e)
+    finally:
+        try:
+            os.unlink(payload_path)
+        except Exception:
+            pass
+
+
+def _queue_alert_email(entry: dict, now: float) -> None:
+    if not _should_send_email(entry, now):
+        return
+    _notify_executor.submit(_send_alert_email_sync, entry)
+
+
+def _email_status_payload() -> dict:
+    return {
+        **_email_metrics,
+        "to": _ALERT_EMAIL_TO,
+        "from": _ALERT_EMAIL_FROM,
+        "cooldown_seconds": _EMAIL_COOLDOWN_SECS,
+    }
 
 
 def _reset_fps_window():
@@ -308,6 +514,7 @@ def build_frame_payload(
         }
         alert_history.append(entry)
         _db_executor.submit(_db._insert_alert_sync, entry)
+        _queue_alert_email(entry, now)
 
     return {
         "tracks": tracks,
@@ -381,6 +588,9 @@ def _build_tracks_from_yolo(
                 "confidence": round(t.get("confidence", 0), 2),
                 "zone": _get_zone(cx, FRAME_WIDTH),
                 "hit_streak": int(t.get("hit_streak", 0)),
+                "hits": int(t.get("hits", 0)),
+                "time_since_update": int(t.get("time_since_update", 0)),
+                "predicted": bool(t.get("predicted", False)),
                 "frame_width": FRAME_WIDTH,
                 "frame_height": FRAME_HEIGHT,
             }
@@ -1163,6 +1373,33 @@ def get_alert_history(limit: int = 200):
     history = list(alert_history)
     history.reverse()
     return {"alerts": history[:limit], "total": len(history)}
+
+
+@app.get("/api/notify/status")
+def get_notify_status():
+    return _email_status_payload()
+
+
+@app.post("/api/notify/test")
+def send_notify_test(force: bool = False):
+    now = time.time()
+    test_entry = {
+        "id": -1,
+        "anomaly": {
+            "type": "fall_detected",
+            "track_id": 0,
+            "position": [640, 360],
+            "note": "manual_test",
+        },
+        "timestamp": now,
+        "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "source": "manual",
+    }
+    if force:
+        _send_alert_email_sync(test_entry)
+    else:
+        _queue_alert_email(test_entry, now)
+    return {"ok": True, "status": _email_status_payload()}
 
 
 @app.post("/api/alerts/clear")

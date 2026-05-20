@@ -63,11 +63,11 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        target: process.env.BACKEND_URL ?? "http://localhost:8000",
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://localhost:8080",
+        target: process.env.BACKEND_WS_URL ?? "ws://localhost:8000",
         ws: true,
         changeOrigin: true,
       },

@@ -53,9 +53,9 @@ FIGHT_MIN_PAIR_SPEED = 16.0
 FIGHT_PERSISTENCE_TIME = 0.8
 FIGHT_MIN_HIT_STREAK = 3
 
-# Unattended object detection is disabled for now. Keep the code path intact,
-# but do not track bottles/bags/books/phones until the project needs them again.
-UNATTENDED_CLASSES = []
+# Classes treated as baggage for unattended-object detection.
+# Keep this narrow: bags only. Bottles, animals, phones, books, etc. remain off.
+UNATTENDED_CLASSES = [24, 26, 28]
 
 # Rectangular digital-fence areas in absolute frame coordinates (1280x720).
 RESTRICTED_ZONES = [
@@ -67,12 +67,14 @@ RESTRICTED_ZONES = [
 COCO_CLASSES = {
     0: "person",
     2: "car",
+    24: "backpack",
+    26: "baggage",
+    28: "suitcase",
 }
 
 # Disabled but intentionally kept for easy re-enable later.
 DISABLED_COCO_CLASSES = {
     1: "bicycle", 3: "motorcycle", 5: "bus", 7: "truck",
     15: "cat", 16: "dog", 17: "horse", 18: "sheep", 19: "cow",
-    24: "backpack", 26: "handbag", 28: "suitcase",
     39: "bottle", 41: "cup", 67: "cell phone", 73: "book",
 }

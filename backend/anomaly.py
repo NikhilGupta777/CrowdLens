@@ -21,10 +21,136 @@ class AnomalyDetector:
         self.fight_candidate_since: dict[tuple[int, int], float] = {}
         self.fight_last_alert_at: dict[tuple[int, int], float] = {}
         self.owner_absent_since: dict[int, float] = {}
+        self.object_owner_id: dict[int, int] = {}
+        self.object_owner_last_near: dict[int, float] = {}
+        self.object_stationary_since: dict[int, float] = {}
+        self.object_alert_active_until: dict[int, float] = {}
+        self.object_alert_payload: dict[int, dict] = {}
         self.fall_candidate_boxes: dict[object, list[float]] = {}
         self.fall_last_seen_at: dict[object, float] = {}
         self.fall_active_until: dict[object, float] = {}
         self.fall_active_payload: dict[object, dict] = {}
+
+    @staticmethod
+    def _bbox_center(track: dict) -> tuple[float, float]:
+        return (
+            (float(track["x1"]) + float(track["x2"])) / 2.0,
+            (float(track["y1"]) + float(track["y2"])) / 2.0,
+        )
+
+    @staticmethod
+    def _distance_point_to_bbox(px: float, py: float, box: dict) -> float:
+        bx1 = float(box["x1"])
+        by1 = float(box["y1"])
+        bx2 = float(box["x2"])
+        by2 = float(box["y2"])
+        nx = min(max(px, bx1), bx2)
+        ny = min(max(py, by1), by2)
+        return float(np.hypot(px - nx, py - ny))
+
+    def _distance_object_to_person(self, obj_track: dict, person_track: dict) -> float:
+        ox, oy = self._bbox_center(obj_track)
+        px, _ = self._bbox_center(person_track)
+        feet_y = float(person_track["y2"])
+        # Use both bbox distance and foot distance. Bags are usually near feet,
+        # while bbox overlap handles seated/near-camera people.
+        return min(
+            self._distance_point_to_bbox(ox, oy, person_track),
+            float(np.hypot(ox - px, oy - feet_y)),
+        )
+
+    @staticmethod
+    def _is_stationary(history: list, threshold: float) -> bool:
+        if len(history) < 4:
+            return False
+        recent = history[-12:]
+        xs = [p[0] for p in recent]
+        ys = [p[1] for p in recent]
+        spread = float(np.hypot(max(xs) - min(xs), max(ys) - min(ys)))
+        return spread <= threshold
+
+    def _emit_unattended_object(
+        self,
+        track: dict,
+        current_time: float,
+        history: list,
+        person_tracks: list[dict],
+    ) -> dict | None:
+        track_id = int(track["id"])
+        class_name = track.get("class_name", "object")
+        cx, cy = self._bbox_center(track)
+
+        if not self._is_stationary(history, STATIONARY_THRESHOLD):
+            self.object_stationary_since.pop(track_id, None)
+            self.owner_absent_since.pop(track_id, None)
+            self.object_alert_active_until.pop(track_id, None)
+            self.object_alert_payload.pop(track_id, None)
+            return None
+
+        if track_id not in self.object_stationary_since:
+            self.object_stationary_since[track_id] = current_time
+
+        nearest_person = None
+        nearest_distance = float("inf")
+        for person in person_tracks:
+            distance = self._distance_object_to_person(track, person)
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_person = person
+
+        owner_id = self.object_owner_id.get(track_id)
+        if owner_id is None and nearest_person is not None and nearest_distance <= UNATTENDED_OWNER_PROXIMITY_PX:
+            owner_id = int(nearest_person["id"])
+            self.object_owner_id[track_id] = owner_id
+            self.object_owner_last_near[track_id] = current_time
+            self.owner_absent_since.pop(track_id, None)
+            return None
+
+        owner_track = next((p for p in person_tracks if int(p["id"]) == owner_id), None) if owner_id is not None else None
+        owner_near = False
+        if owner_track is not None:
+            owner_distance = self._distance_object_to_person(track, owner_track)
+            owner_near = owner_distance <= UNATTENDED_OWNER_PROXIMITY_PX
+
+        if owner_near:
+            self.object_owner_last_near[track_id] = current_time
+            self.owner_absent_since.pop(track_id, None)
+            return None
+
+        # If no owner was ever seen, still allow alerting after the object has
+        # been stationary and isolated long enough. This covers clips that start
+        # after the bag was abandoned.
+        if track_id not in self.owner_absent_since:
+            self.owner_absent_since[track_id] = current_time
+            return None
+
+        stationary_time = current_time - self.object_stationary_since.get(track_id, current_time)
+        owner_absent_time = current_time - self.owner_absent_since[track_id]
+        if stationary_time < UNATTENDED_OBJECT_TIME or owner_absent_time < UNATTENDED_OWNER_GRACE_TIME:
+            active_payload = self.object_alert_payload.get(track_id)
+            if self.object_alert_active_until.get(track_id, 0.0) > current_time and active_payload:
+                return dict(active_payload)
+            return None
+
+        anomaly = {
+            "type": "unattended_object",
+            "track_id": track_id,
+            "class_name": class_name,
+            "duration": round(stationary_time, 1),
+            "owner_absent": round(owner_absent_time, 1),
+            "position": [cx, cy],
+            "bbox": [
+                int(track["x1"]),
+                int(track["y1"]),
+                int(track["x2"]),
+                int(track["y2"]),
+            ],
+        }
+        if owner_id is not None:
+            anomaly["owner_track_id"] = owner_id
+        self.object_alert_active_until[track_id] = current_time + 4.0
+        self.object_alert_payload[track_id] = dict(anomaly)
+        return anomaly
 
     def _emit_fall_anomalies(
         self,
@@ -171,14 +297,8 @@ class AnomalyDetector:
     ) -> list:
         anomalies = []
 
-        person_positions = [
-            (
-                (t["x1"] + t["x2"]) / 2.0,
-                (t["y1"] + t["y2"]) / 2.0,
-            )
-            for t in tracks
-            if t["class_id"] == 0
-        ]
+        person_tracks = [t for t in tracks if t["class_id"] == 0]
+        person_positions = [self._bbox_center(t) for t in person_tracks]
 
         person_count = len(person_positions)
         if person_count > OVERCROWDING_THRESHOLD:
@@ -266,33 +386,14 @@ class AnomalyDetector:
                             self.zone_entry_since.pop(key, None)
 
             elif class_id in UNATTENDED_CLASSES:
-                first_seen = history[0][2]
-                duration = current_time - first_seen
-                nearest_person = min(
-                    (np.hypot(cx - px, cy - py) for px, py in person_positions),
-                    default=float("inf"),
+                unattended = self._emit_unattended_object(
+                    track,
+                    current_time,
+                    history,
+                    person_tracks,
                 )
-                is_attended = nearest_person <= UNATTENDED_OWNER_PROXIMITY_PX
-
-                if is_attended:
-                    self.owner_absent_since.pop(track_id, None)
-                    continue
-
-                if track_id not in self.owner_absent_since:
-                    self.owner_absent_since[track_id] = current_time
-                owner_absent_time = current_time - self.owner_absent_since[track_id]
-
-                if duration >= UNATTENDED_OBJECT_TIME and owner_absent_time >= UNATTENDED_OWNER_GRACE_TIME:
-                    start_pos = history[0]
-                    dist_moved = np.hypot(cx - start_pos[0], cy - start_pos[1])
-                    if dist_moved < STATIONARY_THRESHOLD:
-                        anomalies.append({
-                            "type": "unattended_object",
-                            "track_id": track_id,
-                            "duration": round(duration, 1),
-                            "owner_absent": round(owner_absent_time, 1),
-                            "position": [cx, cy]
-                        })
+                if unattended:
+                    anomalies.append(unattended)
 
         if FIGHT_DETECTION_ENABLED and len(person_motion) >= 2:
             active_fight_pairs: set[tuple[int, int]] = set()
@@ -354,6 +455,11 @@ class AnomalyDetector:
             self.running_candidate_since.pop(k, None)
             self.fall_candidate_since.pop(k, None)
             self.owner_absent_since.pop(k, None)
+            self.object_owner_id.pop(k, None)
+            self.object_owner_last_near.pop(k, None)
+            self.object_stationary_since.pop(k, None)
+            self.object_alert_active_until.pop(k, None)
+            self.object_alert_payload.pop(k, None)
 
         stale_zone_keys = [k for k in self.zone_entry_since if k[0] not in active_ids]
         for k in stale_zone_keys:

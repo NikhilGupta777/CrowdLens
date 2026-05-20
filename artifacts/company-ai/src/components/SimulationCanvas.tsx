@@ -480,7 +480,12 @@ function SimulationCanvas({
           ctx.strokeStyle = `rgba(249,115,22,${0.4 + 0.3 * pulse})`;
           ctx.lineWidth = 2.5;
           ctx.setLineDash([5, 5]);
-          ctx.strokeRect(ax - 30, ay - 30, 60, 60);
+          if (anomaly.bbox && anomaly.bbox.length === 4) {
+            const [bx1, by1, bx2, by2] = anomaly.bbox;
+            ctx.strokeRect(bx1, by1, Math.max(1, bx2 - bx1), Math.max(1, by2 - by1));
+          } else {
+            ctx.strokeRect(ax - 30, ay - 30, 60, 60);
+          }
           ctx.setLineDash([]);
           ctx.font = "700 10px monospace";
           ctx.fillStyle = "#f97316";

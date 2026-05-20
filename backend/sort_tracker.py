@@ -9,6 +9,15 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
 
+try:
+    from backend.config import UNATTENDED_CLASSES
+except Exception:
+    UNATTENDED_CLASSES = [24, 26, 28]
+
+OBJECT_TRACK_CLASSES = set(UNATTENDED_CLASSES) | {2}
+OBJECT_TRACK_HOLD_FRAMES = 30
+OBJECT_ASSOCIATION_DISTANCE_PX = 95.0
+
 # Module-level ID counter with a lock so multiple Sort instances
 # (video, webcam, stream) each get globally unique track IDs and
 # a reset() on one instance cannot cause ID collisions in another.
@@ -51,6 +60,35 @@ def _iou(b1, b2):
     return inter / (a1 + a2 - inter + 1e-6)
 
 
+def _center_distance(b1, b2):
+    c1x = (b1[0] + b1[2]) / 2.0
+    c1y = (b1[1] + b1[3]) / 2.0
+    c2x = (b2[0] + b2[2]) / 2.0
+    c2y = (b2[1] + b2[3]) / 2.0
+    return float(np.hypot(c1x - c2x, c1y - c2y))
+
+
+def _box_area(b):
+    return max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+
+
+def _object_association_cost(det_box, pred_box):
+    iou = _iou(det_box, pred_box)
+    if iou > 0.0:
+        return 1.0 - iou
+
+    # Small bags and distant cars often jump enough between YOLO frames that IoU
+    # becomes zero. A bounded center-distance fallback keeps the same ID without
+    # allowing far-away objects to merge.
+    det_diag = np.sqrt(_box_area(det_box))
+    pred_diag = np.sqrt(_box_area(pred_box))
+    max_dist = max(OBJECT_ASSOCIATION_DISTANCE_PX, 1.5 * det_diag, 1.5 * pred_diag)
+    dist = _center_distance(det_box, pred_box)
+    if dist <= max_dist:
+        return min(0.70, (dist / max_dist) * 0.70)
+    return 1.0
+
+
 def _associate(detections, predictions, iou_threshold=0.3):
     """
     Match detections to existing trackers via Hungarian algorithm.
@@ -70,7 +108,10 @@ def _associate(detections, predictions, iou_threshold=0.3):
                 # Keep class identity stable: do not match person<->object tracks.
                 cost[d, t] = 1e6
                 continue
-            cost[d, t] = 1.0 - _iou(det_box, pred_box)
+            if det_class in OBJECT_TRACK_CLASSES:
+                cost[d, t] = _object_association_cost(det_box, pred_box)
+            else:
+                cost[d, t] = 1.0 - _iou(det_box, pred_box)
 
     row_ind, col_ind = linear_sum_assignment(cost)
 
@@ -216,9 +257,16 @@ class Sort:
         # Collect active tracks
         active = []
         for trk in self.trackers:
-            if trk.time_since_update < 1 and (
+            recently_detected = trk.time_since_update < 1
+            confirmed_now = (
                 trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits
-            ):
+            )
+            object_hold = (
+                trk.class_id in OBJECT_TRACK_CLASSES
+                and 0 < trk.time_since_update <= min(self.max_age, OBJECT_TRACK_HOLD_FRAMES)
+                and trk.hits >= max(2, self.min_hits)
+            )
+            if (recently_detected and confirmed_now) or object_hold:
                 box = trk.get_box().tolist()
                 active.append({
                     "id": trk.id,
@@ -227,6 +275,9 @@ class Sort:
                     "confidence": trk.confidence,
                     "hit_streak": trk.hit_streak,
                     "age": trk.age,
+                    "hits": trk.hits,
+                    "time_since_update": trk.time_since_update,
+                    "predicted": trk.time_since_update > 0,
                 })
 
         # Prune dead trackers
