@@ -14,7 +14,8 @@ try:
 except Exception:
     UNATTENDED_CLASSES = [24, 26, 28]
 
-OBJECT_TRACK_CLASSES = set(UNATTENDED_CLASSES) | {2}
+BAGGAGE_TRACK_CLASSES = set(UNATTENDED_CLASSES)
+OBJECT_TRACK_CLASSES = BAGGAGE_TRACK_CLASSES | {2}
 OBJECT_TRACK_HOLD_FRAMES = 30
 OBJECT_ASSOCIATION_DISTANCE_PX = 95.0
 
@@ -74,12 +75,12 @@ def _box_area(b):
 
 def _object_association_cost(det_box, pred_box):
     iou = _iou(det_box, pred_box)
-    if iou > 0.0:
+    if iou >= 0.30:
         return 1.0 - iou
 
     # Small bags and distant cars often jump enough between YOLO frames that IoU
-    # becomes zero. A bounded center-distance fallback keeps the same ID without
-    # allowing far-away objects to merge.
+    # becomes weak or zero. A bounded center-distance fallback keeps the same ID
+    # without allowing far-away objects to merge.
     det_diag = np.sqrt(_box_area(det_box))
     pred_diag = np.sqrt(_box_area(pred_box))
     max_dist = max(OBJECT_ASSOCIATION_DISTANCE_PX, 1.5 * det_diag, 1.5 * pred_diag)
@@ -170,6 +171,7 @@ class KalmanBoxTracker:
 
         self.class_id = class_id
         self.confidence = confidence
+        self.last_bbox = np.array(bbox, dtype=float)
         self.hits = 1
         self.hit_streak = 1
         self.age = 0
@@ -191,10 +193,14 @@ class KalmanBoxTracker:
         self.hit_streak += 1
         self.class_id = class_id
         self.confidence = confidence
+        self.last_bbox = np.array(bbox, dtype=float)
         self.kf.update(_box_to_z(bbox))
 
     def get_box(self):
         return _z_to_box(self.kf.x)
+
+    def get_last_box(self):
+        return self.last_bbox.copy()
 
 
 class Sort:
@@ -227,7 +233,8 @@ class Sort:
             if np.any(np.isnan(pred)):
                 dead.append(i)
             else:
-                predictions.append((pred.tolist(), trk.class_id))
+                match_box = trk.get_last_box() if trk.class_id in BAGGAGE_TRACK_CLASSES else pred
+                predictions.append((match_box.tolist(), trk.class_id))
         for i in reversed(dead):
             self.trackers.pop(i)
 
@@ -264,10 +271,21 @@ class Sort:
             object_hold = (
                 trk.class_id in OBJECT_TRACK_CLASSES
                 and 0 < trk.time_since_update <= min(self.max_age, OBJECT_TRACK_HOLD_FRAMES)
-                and trk.hits >= max(2, self.min_hits)
+                and (
+                    trk.hits >= max(2, self.min_hits)
+                    or (
+                        trk.class_id in BAGGAGE_TRACK_CLASSES
+                        and trk.time_since_update <= 8
+                    )
+                )
             )
             if (recently_detected and confirmed_now) or object_hold:
-                box = trk.get_box().tolist()
+                box_source = (
+                    trk.get_last_box()
+                    if trk.class_id in BAGGAGE_TRACK_CLASSES and trk.time_since_update > 0
+                    else trk.get_box()
+                )
+                box = box_source.tolist()
                 active.append({
                     "id": trk.id,
                     "bbox": box,
