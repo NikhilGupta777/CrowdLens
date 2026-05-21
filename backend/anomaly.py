@@ -189,13 +189,15 @@ class AnomalyDetector:
             fw = max(1.0, float(fx2) - float(fx1))
             fh = max(1.0, float(fy2) - float(fy1))
             area = fw * fh
-            # Keep HF model as the source of truth, but reject tiny / high / very
-            # vertical boxes that frequently cause false positives (wall objects).
+            # Reject false positives: tiny boxes, boxes in the top of frame
+            # (wall/ceiling objects), and upright boxes (standing people).
             if float(fy2) < FRAME_HEIGHT * 0.38:
                 continue
             if area < min_area:
                 continue
-            if (fw / fh) < 0.50:
+            # A fallen person is wider than tall or roughly square.
+            # Reject clearly upright boxes (tall and narrow).
+            if (fw / fh) < 0.65:
                 continue
 
             fcx = (fx1 + fx2) / 2.0
@@ -326,10 +328,11 @@ class AnomalyDetector:
             if class_id == 0 and len(history) >= 5:
                 hit_streak = int(track.get("hit_streak", 0))
                 recent = history[-5:]
+                time_span = recent[-1][2] - recent[0][2]
                 dist = 0
                 for i in range(1, len(recent)):
                     dist += np.hypot(recent[i][0] - recent[i-1][0], recent[i][1] - recent[i-1][1])
-                avg_speed = dist / len(recent)
+                avg_speed = dist / time_span if time_span > 0.01 else 0.0
                 person_motion[track_id] = {
                     "cx": cx,
                     "cy": cy,
@@ -337,8 +340,6 @@ class AnomalyDetector:
                     "hit_streak": hit_streak,
                 }
 
-                # Require stable track age and persistence window to reduce
-                # false running alerts from brief SORT ID switches/jitter.
                 if hit_streak >= RUNNING_MIN_HIT_STREAK and avg_speed > RUNNING_SPEED_THRESHOLD:
                     if track_id not in self.running_candidate_since:
                         self.running_candidate_since[track_id] = current_time

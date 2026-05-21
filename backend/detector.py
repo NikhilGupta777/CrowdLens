@@ -12,13 +12,14 @@ import torch
 
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 
-from backend.config import COCO_CLASSES, CONFIDENCE_THRESHOLD, YOLO_MODEL, UNATTENDED_CLASSES
+from backend.config import COCO_CLASSES, CONFIDENCE_THRESHOLD, YOLO_MODEL, UNATTENDED_CLASSES, BAGGAGE_CONFIDENCE_FLOOR
 
 MODEL_PATH     = YOLO_MODEL                           # e.g. "yolo11m.pt"
 ONNX_PATH      = MODEL_PATH.replace(".pt", ".onnx")   # e.g. "yolo11m.onnx"
 TARGET_CLASSES = set(COCO_CLASSES.keys())
 BAGGAGE_CLASSES = set(UNATTENDED_CLASSES)
 BAGGAGE_TRACK_CLASS_ID = 26
+_BAGGAGE_FLOOR = max(0.05, min(0.30, BAGGAGE_CONFIDENCE_FLOOR))
 
 _model        = None
 _model_ready  = False
@@ -207,16 +208,15 @@ class YOLOv8Detector:
         """
         Run YOLO11m inference on a BGR frame.
 
-        Args:
-            frame: numpy array (H × W × 3, BGR)
-
-        Returns:
-            list of {"bbox": [x1,y1,x2,y2], "class_id": int, "confidence": float,
-                      "class_name": str}
+        Uses a two-tier confidence strategy: YOLO runs at the lower baggage
+        floor so low-confidence bags are not discarded internally, then
+        non-baggage classes are post-filtered at the normal threshold.
         """
-        conf = CONFIDENCE_THRESHOLD if conf_override is None else conf_override
+        normal_conf = CONFIDENCE_THRESHOLD if conf_override is None else conf_override
+        yolo_floor = min(normal_conf, _BAGGAGE_FLOOR)
+
         with _lock:
-            results = _model(frame, conf=conf, verbose=False)[0]
+            results = _model(frame, conf=yolo_floor, verbose=False)[0]
 
         detections = []
         for box in results.boxes:
@@ -226,6 +226,13 @@ class YOLOv8Detector:
 
             if class_id not in TARGET_CLASSES:
                 continue
+
+            if class_id in BAGGAGE_CLASSES:
+                if confidence < _BAGGAGE_FLOOR:
+                    continue
+            else:
+                if confidence < normal_conf:
+                    continue
 
             detections.append({
                 "bbox":       [float(x1), float(y1), float(x2), float(y2)],

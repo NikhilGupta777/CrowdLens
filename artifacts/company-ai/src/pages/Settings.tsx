@@ -34,18 +34,18 @@ interface Config {
 
 const DEFAULT_CONFIG: Config = {
   overcrowding_threshold: 4,
-  running_speed_threshold: 18,
+  running_speed_threshold: 270,
   unattended_object_time: 5,
   stationary_threshold: 150,
   unattended_owner_proximity_px: 180,
   unattended_owner_grace_time: 2.0,
-  fall_model_confidence_threshold: 0.18,
-  fall_persistence_time: 0.4,
+  fall_model_confidence_threshold: 0.35,
+  fall_persistence_time: 1.2,
   restricted_zone_enabled: true,
   restricted_zone_min_dwell: 0.6,
   fight_detection_enabled: true,
   fight_proximity_px: 180,
-  fight_min_pair_speed: 16,
+  fight_min_pair_speed: 240,
   fight_persistence_time: 0.8,
   fight_min_hit_streak: 3,
   alert_cooldown_secs: 5,
@@ -638,15 +638,15 @@ export default function Settings() {
 
           <PremiumSlider
             label="Running Speed Threshold"
-            description="Average pixel-per-frame speed above this is flagged as running."
+            description="Average pixel-per-second speed above this is flagged as running."
             icon={Zap}
             color="#a855f7"
             value={config.running_speed_threshold}
-            min={5}
-            max={100}
-            step={1}
+            min={50}
+            max={800}
+            step={10}
             onChange={(v) => setConfig((c) => ({ ...c, running_speed_threshold: v }))}
-            unit=" px/f"
+            unit=" px/s"
           />
 
           <PremiumSlider
@@ -798,15 +798,15 @@ export default function Settings() {
 
           <PremiumSlider
             label="Fight Pair Speed"
-            description="Both persons must exceed this average speed for suspicion."
+            description="Both persons must exceed this average speed (px/s) for suspicion."
             icon={Zap}
             color="#f43f5e"
             value={config.fight_min_pair_speed}
-            min={6}
-            max={80}
-            step={1}
+            min={50}
+            max={800}
+            step={10}
             onChange={(v) => setConfig((c) => ({ ...c, fight_min_pair_speed: v }))}
-            unit=" px/f"
+            unit=" px/s"
           />
 
           <PremiumSlider

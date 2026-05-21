@@ -133,10 +133,10 @@ export default function AlertsFeed({ anomalies }: Props) {
                     <span style={{ fontSize: 10, color: "#64748b" }}>{a.count} people</span>
                   )}
                   {a.avg_speed !== undefined && (
-                    <span style={{ fontSize: 10, color: "#a855f7", fontWeight: 600 }}>{a.avg_speed} px/f</span>
+                    <span style={{ fontSize: 10, color: "#a855f7", fontWeight: 600 }}>{a.avg_speed} px/s</span>
                   )}
                   {a.avg_pair_speed !== undefined && (
-                    <span style={{ fontSize: 10, color: "#f43f5e", fontWeight: 600 }}>{a.avg_pair_speed} pair px/f</span>
+                    <span style={{ fontSize: 10, color: "#f43f5e", fontWeight: 600 }}>{a.avg_pair_speed} pair px/s</span>
                   )}
                   {a.distance !== undefined && (
                     <span style={{ fontSize: 10, color: "#f43f5e", fontWeight: 600 }}>{a.distance}px separation</span>

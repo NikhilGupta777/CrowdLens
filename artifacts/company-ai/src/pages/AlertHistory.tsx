@@ -74,8 +74,8 @@ function exportCSV(alerts: AlertRecord[]) {
     "Track ID",
     "Track Pair",
     "Count",
-    "Speed (px/f)",
-    "Pair Speed (px/f)",
+    "Speed (px/s)",
+    "Pair Speed (px/s)",
     "Pair Distance (px)",
     "Duration (s)",
     "Fall Confidence",
@@ -171,8 +171,8 @@ function renderDetails(record: AlertRecord): string {
     parts.push(`Pair #${record.anomaly.track_ids[0]} & #${record.anomaly.track_ids[1]}`);
   }
   if (record.anomaly.count !== undefined) parts.push(`${record.anomaly.count} people`);
-  if (record.anomaly.avg_speed !== undefined) parts.push(`${record.anomaly.avg_speed} px/f`);
-  if (record.anomaly.avg_pair_speed !== undefined) parts.push(`${record.anomaly.avg_pair_speed} pair px/f`);
+  if (record.anomaly.avg_speed !== undefined) parts.push(`${record.anomaly.avg_speed} px/s`);
+  if (record.anomaly.avg_pair_speed !== undefined) parts.push(`${record.anomaly.avg_pair_speed} pair px/s`);
   if (record.anomaly.distance !== undefined) parts.push(`${record.anomaly.distance}px apart`);
   if (record.anomaly.duration !== undefined) parts.push(`${record.anomaly.duration}s`);
   if (record.anomaly.confidence !== undefined) parts.push(`conf ${(record.anomaly.confidence * 100).toFixed(0)}%`);

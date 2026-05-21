@@ -17,6 +17,9 @@ except Exception:
 BAGGAGE_TRACK_CLASSES = set(UNATTENDED_CLASSES)
 OBJECT_TRACK_CLASSES = BAGGAGE_TRACK_CLASSES | {2}
 OBJECT_TRACK_HOLD_FRAMES = 30
+BAGGAGE_STRONG_HOLD_FRAMES = 120
+BAGGAGE_WEAK_HOLD_FRAMES = 45
+BAGGAGE_STRONG_CONFIDENCE = 0.20
 OBJECT_ASSOCIATION_DISTANCE_PX = 95.0
 
 # Module-level ID counter with a lock so multiple Sort instances
@@ -268,15 +271,23 @@ class Sort:
             confirmed_now = (
                 trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits
             )
+            hold_limit = (
+                BAGGAGE_STRONG_HOLD_FRAMES
+                if trk.class_id in BAGGAGE_TRACK_CLASSES
+                and trk.confidence >= BAGGAGE_STRONG_CONFIDENCE
+                else BAGGAGE_WEAK_HOLD_FRAMES
+                if trk.class_id in BAGGAGE_TRACK_CLASSES
+                else OBJECT_TRACK_HOLD_FRAMES
+                if trk.class_id in OBJECT_TRACK_CLASSES
+                else 0
+            )
             object_hold = (
-                trk.class_id in OBJECT_TRACK_CLASSES
-                and 0 < trk.time_since_update <= min(self.max_age, OBJECT_TRACK_HOLD_FRAMES)
+                hold_limit > 0
+                and 0 < trk.time_since_update <= hold_limit
                 and (
-                    trk.hits >= max(2, self.min_hits)
-                    or (
-                        trk.class_id in BAGGAGE_TRACK_CLASSES
-                        and trk.time_since_update <= 8
-                    )
+                    trk.hits >= 1
+                    if trk.class_id in BAGGAGE_TRACK_CLASSES
+                    else trk.hits >= max(2, self.min_hits)
                 )
             )
             if (recently_detected and confirmed_now) or object_hold:
@@ -298,8 +309,17 @@ class Sort:
                     "predicted": trk.time_since_update > 0,
                 })
 
-        # Prune dead trackers
-        self.trackers = [t for t in self.trackers if t.time_since_update <= self.max_age]
+        # Prune dead trackers — respect extended hold for object/baggage tracks.
+        def _prune_limit(trk):
+            if trk.class_id in BAGGAGE_TRACK_CLASSES:
+                if trk.confidence >= BAGGAGE_STRONG_CONFIDENCE:
+                    return BAGGAGE_STRONG_HOLD_FRAMES
+                return BAGGAGE_WEAK_HOLD_FRAMES
+            if trk.class_id in OBJECT_TRACK_CLASSES:
+                return OBJECT_TRACK_HOLD_FRAMES
+            return self.max_age
+
+        self.trackers = [t for t in self.trackers if t.time_since_update <= _prune_limit(t)]
 
         return active
 
