@@ -533,11 +533,9 @@ def build_frame_payload(
 
 def _apply_config():
     import backend.config as cfg
-    import backend.anomaly as am
 
     for k, v in current_config.items():
         setattr(cfg, k.upper(), v)
-        setattr(am, k.upper(), v)
 
 
 async def _broadcast(message: str):

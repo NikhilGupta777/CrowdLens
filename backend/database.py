@@ -12,11 +12,27 @@ _thread_local = threading.local()
 
 def _get_conn() -> sqlite3.Connection:
     if not hasattr(_thread_local, "conn") or _thread_local.conn is None:
-        conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        _thread_local.conn = conn
+        try:
+            conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _thread_local.conn = conn
+        except sqlite3.DatabaseError:
+            # DB file is corrupt — remove and recreate
+            try:
+                import os
+                for suffix in ("", "-shm", "-wal"):
+                    p = _DB_PATH + suffix
+                    if os.path.exists(p):
+                        os.unlink(p)
+            except OSError:
+                pass
+            conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _thread_local.conn = conn
     return _thread_local.conn
 
 
@@ -38,22 +54,26 @@ def _init_db_sync():
 
 
 def _insert_alert_sync(entry: dict):
-    conn = _get_conn()
-    conn.execute(
-        """
-        INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            entry["id"],
-            json.dumps(entry["anomaly"]),
-            entry["timestamp"],
-            entry["iso"],
-            entry.get("source", ""),
-            entry.get("snapshot_url"),
-        ),
-    )
-    conn.commit()
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry["id"],
+                json.dumps(entry["anomaly"]),
+                entry["timestamp"],
+                entry["iso"],
+                entry.get("source", ""),
+                entry.get("snapshot_url"),
+            ),
+        )
+        conn.commit()
+    except (sqlite3.DatabaseError, sqlite3.OperationalError) as e:
+        # Log but don't crash the background thread on DB write failures
+        print(f"[database] Insert alert failed: {e}")
 
 
 def _load_alerts_sync(limit: int = 500) -> list[dict]:

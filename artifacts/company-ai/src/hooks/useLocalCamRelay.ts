@@ -149,43 +149,64 @@ export function useLocalCamRelay() {
     }
 
     const reader = resp.body.getReader();
+    // Use a list of chunks and only flatten when searching for JPEG boundaries.
+    // This avoids O(n²) Uint8Array copies on every read() call.
     let buf = new Uint8Array(0);
+    let bufCapacity = 0;
+
+    function appendToBuffer(chunk: Uint8Array) {
+      const needed = buf.length + chunk.length;
+      if (needed > bufCapacity) {
+        // Grow by at least 2× to amortize allocations
+        bufCapacity = Math.max(needed, bufCapacity * 2, 65536);
+        const grown = new Uint8Array(bufCapacity);
+        grown.set(buf);
+        buf = grown;
+      }
+      buf.set(chunk, buf.length);
+      // Update the "logical length" via a view trick — store length externally
+      buf = new Uint8Array(buf.buffer, 0, needed);
+    }
 
     try {
       while (!camStopRef.current) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        // Grow buffer
-        const merged = new Uint8Array(buf.length + value.length);
-        merged.set(buf);
-        merged.set(value, buf.length);
-        buf = merged;
+        // Grow buffer efficiently
+        appendToBuffer(value);
 
         // Extract all complete JPEG frames (SOI 0xFF 0xD8 … EOI 0xFF 0xD9)
         let attempts = 0;
         while (buf.length > 4 && attempts++ < 20) {
           const soi = findSeq(buf, 0xff, 0xd8);
-          if (soi === -1) { buf = new Uint8Array(0); break; }
+          if (soi === -1) { buf = new Uint8Array(0); bufCapacity = 0; break; }
 
           const eoi = findSeq(buf, 0xff, 0xd9, soi + 2);
           if (eoi === -1) {
             // incomplete — keep from SOI onwards and wait for more data
-            buf = buf.slice(soi);
+            if (soi > 0) {
+              const remaining = buf.slice(soi);
+              buf = remaining;
+              bufCapacity = remaining.length;
+            }
             break;
           }
 
           // Complete frame found: [soi … eoi+1]
           const frame = buf.slice(soi, eoi + 2);
-          sendFrame(frame.buffer as ArrayBuffer);
+          sendFrame(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer);
 
-          buf = buf.slice(eoi + 2);
+          const remaining = buf.slice(eoi + 2);
+          buf = remaining;
+          bufCapacity = remaining.length;
         }
 
         // Safety: prevent unbounded buffer growth (> 2 MB = something is wrong)
         if (buf.length > 2 * 1024 * 1024) {
           console.warn("[relay] Buffer overrun — flushing");
           buf = new Uint8Array(0);
+          bufCapacity = 0;
         }
       }
     } finally {

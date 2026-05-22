@@ -143,6 +143,7 @@ function buildChartData(alerts: AlertRecord[]): ChartBucket[] {
       overcrowding: 0,
       fall_detected: 0,
       restricted_zone: 0,
+      loitering: 0,
       manual_snapshot: 0,
     };
   }
@@ -413,6 +414,7 @@ export default function AlertHistory() {
             && d.overcrowding === 0
             && d.fall_detected === 0
             && d.restricted_zone === 0
+            && d.loitering === 0
             && d.manual_snapshot === 0
           )) ? (
             <div style={{ textAlign: "center", padding: "20px 0", color: "var(--app-text-muted)", fontSize: 13 }}>
@@ -439,6 +441,7 @@ export default function AlertHistory() {
                 <Bar dataKey="overcrowding" name="Overcrowding" fill="#f97316" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="fall_detected" name="Fall Detected" fill="#dc2626" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="restricted_zone" name="Restricted Zone" fill="#eab308" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="loitering" name="Loitering" fill="#6366f1" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="manual_snapshot" name="Manual Snapshot" fill="#60a5fa" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
