@@ -6,7 +6,9 @@ from backend.config import FRAME_WIDTH, FRAME_HEIGHT, COCO_CLASSES, UNATTENDED_C
 PERSON_W, PERSON_H = 60, 140
 OBJ_W, OBJ_H = 40, 40
 
-_id_counter = 1
+# Start simulation IDs at a high offset so they never collide with
+# SORT tracker IDs (which start from 1 and grow).
+_id_counter = 100_000
 
 
 def _next_id():

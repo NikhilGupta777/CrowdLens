@@ -30,6 +30,9 @@ interface Config {
   fight_persistence_time: number;
   fight_min_hit_streak: number;
   alert_cooldown_secs: number;
+  loitering_enabled: boolean;
+  loitering_time_threshold: number;
+  loitering_radius_px: number;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -49,6 +52,9 @@ const DEFAULT_CONFIG: Config = {
   fight_persistence_time: 0.8,
   fight_min_hit_streak: 3,
   alert_cooldown_secs: 5,
+  loitering_enabled: true,
+  loitering_time_threshold: 15,
+  loitering_radius_px: 120,
 };
 
 const COCO_CLASSES = [
@@ -832,6 +838,54 @@ export default function Settings() {
             max={10}
             step={1}
             onChange={(v) => setConfig((c) => ({ ...c, fight_min_hit_streak: v }))}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, marginBottom: 20 }}>
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            LOITERING DETECTION
+          </div>
+
+          <ToggleCard
+            label="Loitering Detection"
+            description="Detect persons who remain within a small area for an extended time."
+            enabled={config.loitering_enabled}
+            onToggle={(next) => setConfig((c) => ({ ...c, loitering_enabled: next }))}
+          />
+
+          <PremiumSlider
+            label="Loitering Time Threshold"
+            description="Seconds a person must remain in the same area before triggering a loitering alert."
+            icon={Clock}
+            color="#6366f1"
+            value={config.loitering_time_threshold}
+            min={3}
+            max={120}
+            step={1}
+            onChange={(v) => setConfig((c) => ({ ...c, loitering_time_threshold: v }))}
+            unit=" s"
+          />
+
+          <PremiumSlider
+            label="Loitering Radius"
+            description="Maximum movement radius (in pixels) to still count as loitering."
+            icon={Move}
+            color="#6366f1"
+            value={config.loitering_radius_px}
+            min={30}
+            max={400}
+            step={10}
+            onChange={(v) => setConfig((c) => ({ ...c, loitering_radius_px: v }))}
+            unit=" px"
           />
         </div>
       </div>

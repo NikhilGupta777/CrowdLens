@@ -270,24 +270,34 @@ function ChatTab() {
       const decoder = new TextDecoder();
       if (!reader) throw new Error("No stream");
 
+      let lineBuf = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const lines = decoder.decode(value).split("\n");
+        lineBuf += decoder.decode(value, { stream: true });
+        const lines = lineBuf.split("\n");
+        // Keep the last element — it may be an incomplete line
+        lineBuf = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          const payload = JSON.parse(line.slice(6));
-          if (payload.done) break;
-          if (payload.error) throw new Error(payload.error);
-          if (payload.content) {
-            setMessages((p) => {
-              const updated = [...p];
-              updated[updated.length - 1] = {
-                ...updated[updated.length - 1],
-                content: updated[updated.length - 1].content + payload.content,
-              };
-              return updated;
-            });
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.done) break;
+            if (payload.error) throw new Error(payload.error);
+            if (payload.content) {
+              setMessages((p) => {
+                const updated = [...p];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  content: updated[updated.length - 1].content + payload.content,
+                };
+                return updated;
+              });
+            }
+          } catch (parseErr) {
+            // Skip malformed lines — may be partial chunk
+            if (parseErr instanceof SyntaxError) continue;
+            throw parseErr;
           }
         }
       }
