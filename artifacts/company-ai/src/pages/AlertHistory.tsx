@@ -19,6 +19,7 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
   overcrowding:      { color: "#f97316", Icon: Users,       label: "Overcrowding",       severity: "MEDIUM" },
   fall_detected:     { color: "#dc2626", Icon: UserRoundX,  label: "Fall Detected",      severity: "HIGH" },
   restricted_zone:   { color: "#eab308", Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH" },
+  loitering:         { color: "#6366f1", Icon: Users,       label: "Loitering",          severity: "MEDIUM" },
   manual_snapshot:   { color: "#60a5fa", Icon: Camera,      label: "Manual Snapshot",    severity: "INFO" },
 };
 
@@ -30,6 +31,7 @@ const FILTER_OPTIONS = [
   "overcrowding",
   "fall_detected",
   "restricted_zone",
+  "loitering",
   "manual_snapshot",
 ] as const;
 
@@ -41,6 +43,7 @@ interface ChartBucket {
   overcrowding: number;
   fall_detected: number;
   restricted_zone: number;
+  loitering: number;
   manual_snapshot: number;
 }
 

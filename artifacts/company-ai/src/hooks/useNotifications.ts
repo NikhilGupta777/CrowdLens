@@ -10,6 +10,7 @@ const ANOMALY_LABELS: Record<string, string> = {
   fight_suspected:   "🚨 Fight suspected",
   fall_detected:     "🆘 Fall detected",
   restricted_zone:   "🚧 Restricted zone breach",
+  loitering:         "🕐 Loitering detected",
 };
 
 export function useNotifications(anomalies: Anomaly[]) {

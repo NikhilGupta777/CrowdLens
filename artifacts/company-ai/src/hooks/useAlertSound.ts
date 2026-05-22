@@ -92,6 +92,9 @@ export function useAlertSound(anomalies: Anomaly[], enabled = true) {
           playTone(ctx, 520, 0.25, 0.18, 300);
         } else if (type === "restricted_zone") {
           playTone(ctx, 950, 0.22, 0.2, 0);
+        } else if (type === "loitering") {
+          playTone(ctx, 550, 0.35, 0.15, 0);
+          playTone(ctx, 650, 0.25, 0.12, 400);
         }
 
         lastPlayedRef.current[type] = now;

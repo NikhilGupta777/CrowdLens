@@ -14,7 +14,7 @@ export interface Track {
 }
 
 export interface Anomaly {
-  type: "running" | "unattended_object" | "overcrowding" | "fall_detected" | "restricted_zone" | "fight_suspected";
+  type: "running" | "unattended_object" | "overcrowding" | "fall_detected" | "restricted_zone" | "fight_suspected" | "loitering";
   track_id?: number;
   track_ids?: number[];
   count?: number;
