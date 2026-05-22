@@ -2,8 +2,6 @@ import numpy as np
 import backend.config as _cfg
 
 # Re-export for any external code that references these as module attributes.
-# All internal reads go through _cfg so that runtime config changes via
-# setattr(backend.config, ...) are visible immediately.
 UNATTENDED_CLASSES = _cfg.UNATTENDED_CLASSES
 
 
@@ -11,6 +9,7 @@ class AnomalyDetector:
     def __init__(self):
         self.track_history: dict = {}
         self.running_candidate_since: dict[int, float] = {}
+        self.running_last_fast_at: dict[int, float] = {}
         self.fall_candidate_since: dict[object, float] = {}
         self.zone_entry_since: dict[tuple[int, str], float] = {}
         self.fight_candidate_since: dict[tuple[int, int], float] = {}
@@ -28,12 +27,21 @@ class AnomalyDetector:
         self.loiter_first_seen: dict[int, float] = {}
         self.loiter_anchor: dict[int, tuple[float, float]] = {}
 
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
+
     @staticmethod
     def _bbox_center(track: dict) -> tuple[float, float]:
         return (
             (float(track["x1"]) + float(track["x2"])) / 2.0,
             (float(track["y1"]) + float(track["y2"])) / 2.0,
         )
+
+    @staticmethod
+    def _bbox_foot(track: dict) -> tuple[float, float]:
+        """Foot point = bottom center of bbox."""
+        cx = (float(track["x1"]) + float(track["x2"])) / 2.0
+        return (cx, float(track["y2"]))
 
     @staticmethod
     def _distance_point_to_bbox(px: float, py: float, box: dict) -> float:
@@ -45,12 +53,20 @@ class AnomalyDetector:
         ny = min(max(py, by1), by2)
         return float(np.hypot(px - nx, py - ny))
 
+    @staticmethod
+    def _bbox_overlaps_rect(track: dict, rx1: float, ry1: float, rx2: float, ry2: float) -> bool:
+        """Check if a track bbox overlaps the given rectangle."""
+        tx1 = float(track["x1"])
+        ty1 = float(track["y1"])
+        tx2 = float(track["x2"])
+        ty2 = float(track["y2"])
+        return tx1 < rx2 and tx2 > rx1 and ty1 < ry2 and ty2 > ry1
+
+
     def _distance_object_to_person(self, obj_track: dict, person_track: dict) -> float:
         ox, oy = self._bbox_center(obj_track)
         px, _ = self._bbox_center(person_track)
         feet_y = float(person_track["y2"])
-        # Use both bbox distance and foot distance. Bags are usually near feet,
-        # while bbox overlap handles seated/near-camera people.
         return min(
             self._distance_point_to_bbox(ox, oy, person_track),
             float(np.hypot(ox - px, oy - feet_y)),
@@ -67,6 +83,75 @@ class AnomalyDetector:
         ys = [p[1] for p in recent]
         spread = float(np.hypot(max(xs) - min(xs), max(ys) - min(ys)))
         return spread <= threshold
+
+    # ── Running Detection (fixed: dual-metric + grace time) ──────────────────
+
+
+    def _check_running(self, track_id: int, track: dict, history: list,
+                       current_time: float) -> dict | None:
+        """
+        Dual-metric running detection:
+          1. Raw pixel speed > RUNNING_SPEED_THRESHOLD
+          2. Body-heights/sec > RUNNING_BODY_HEIGHTS_PER_SEC
+        Either metric alone triggers running. Uses grace time so a 1-frame
+        speed dip doesn't reset the persistence timer.
+        """
+        hit_streak = int(track.get("hit_streak", 0))
+        if hit_streak < _cfg.RUNNING_MIN_HIT_STREAK:
+            # Not enough confirmed frames — reset
+            self.running_candidate_since.pop(track_id, None)
+            self.running_last_fast_at.pop(track_id, None)
+            return None
+
+        recent = history[-5:]
+        time_span = recent[-1][2] - recent[0][2]
+        if time_span < 0.01:
+            return None
+
+        dist = 0.0
+        for i in range(1, len(recent)):
+            dist += np.hypot(recent[i][0] - recent[i-1][0],
+                             recent[i][1] - recent[i-1][1])
+        avg_speed = dist / time_span
+
+        # Body-heights/sec: average height from recent history entries
+        heights = [entry[4] for entry in recent if len(entry) >= 5]
+        avg_height = sum(heights) / len(heights) if heights else 1.0
+        body_heights_per_sec = avg_speed / max(avg_height, 1.0)
+
+        is_fast = (avg_speed > _cfg.RUNNING_SPEED_THRESHOLD or
+                   body_heights_per_sec > _cfg.RUNNING_BODY_HEIGHTS_PER_SEC)
+
+        if is_fast:
+            self.running_last_fast_at[track_id] = current_time
+            if track_id not in self.running_candidate_since:
+                self.running_candidate_since[track_id] = current_time
+        else:
+            # Grace time: tolerate brief dips without resetting
+            last_fast = self.running_last_fast_at.get(track_id, 0.0)
+            grace = getattr(_cfg, "RUNNING_RESET_GRACE_TIME", 0.4)
+            if (current_time - last_fast) > grace:
+                self.running_candidate_since.pop(track_id, None)
+                self.running_last_fast_at.pop(track_id, None)
+                return None
+
+        candidate_start = self.running_candidate_since.get(track_id)
+        if candidate_start is None:
+            return None
+        elapsed = current_time - candidate_start
+        if elapsed >= _cfg.RUNNING_PERSISTENCE_TIME:
+            cx, cy = self._bbox_center(track)
+            return {
+                "type": "running",
+                "track_id": track_id,
+                "avg_speed": round(float(avg_speed), 1),
+                "body_heights_per_sec": round(float(body_heights_per_sec), 2),
+                "position": [cx, cy],
+            }
+        return None
+
+
+    # ── Unattended Object (fixed: bystander-attends logic) ───────────────────
 
     def _emit_unattended_object(
         self,
@@ -89,13 +174,20 @@ class AnomalyDetector:
         if track_id not in self.object_stationary_since:
             self.object_stationary_since[track_id] = current_time
 
+        # Find nearest person and check bystander proximity
         nearest_person = None
         nearest_distance = float("inf")
+        any_person_near = False
         for person in person_tracks:
             distance = self._distance_object_to_person(track, person)
             if distance < nearest_distance:
                 nearest_distance = distance
                 nearest_person = person
+            if distance <= _cfg.UNATTENDED_OWNER_PROXIMITY_PX:
+                any_person_near = True
+
+        # Bystander-attends: if ANY person is near, the object is attended
+        bystander_attends = getattr(_cfg, "UNATTENDED_BYSTANDER_ATTENDS", False)
 
         owner_id = self.object_owner_id.get(track_id)
         if owner_id is None and nearest_person is not None and nearest_distance <= _cfg.UNATTENDED_OWNER_PROXIMITY_PX:
@@ -105,15 +197,14 @@ class AnomalyDetector:
             self.owner_absent_since.pop(track_id, None)
             return None
 
+
         owner_track = next((p for p in person_tracks if int(p["id"]) == owner_id), None) if owner_id is not None else None
         owner_near = False
         if owner_track is not None:
             owner_distance = self._distance_object_to_person(track, owner_track)
             owner_near = owner_distance <= _cfg.UNATTENDED_OWNER_PROXIMITY_PX
 
-        # If the assigned owner's track has completely disappeared (SORT pruned it),
-        # re-assign ownership to the nearest current person. This prevents stale
-        # owner IDs from blocking alerts indefinitely.
+        # If the assigned owner's track disappeared, re-assign to nearest person
         if owner_id is not None and owner_track is None:
             if nearest_person is not None and nearest_distance <= _cfg.UNATTENDED_OWNER_PROXIMITY_PX:
                 owner_id = int(nearest_person["id"])
@@ -122,14 +213,12 @@ class AnomalyDetector:
                 self.owner_absent_since.pop(track_id, None)
                 return None
 
-        if owner_near:
+        # Object is attended if owner is near OR (bystander mode) any person is near
+        if owner_near or (bystander_attends and any_person_near):
             self.object_owner_last_near[track_id] = current_time
             self.owner_absent_since.pop(track_id, None)
             return None
 
-        # If no owner was ever seen, still allow alerting after the object has
-        # been stationary and isolated long enough. This covers clips that start
-        # after the bag was abandoned.
         if track_id not in self.owner_absent_since:
             self.owner_absent_since[track_id] = current_time
             return None
@@ -149,18 +238,16 @@ class AnomalyDetector:
             "duration": round(stationary_time, 1),
             "owner_absent": round(owner_absent_time, 1),
             "position": [cx, cy],
-            "bbox": [
-                int(track["x1"]),
-                int(track["y1"]),
-                int(track["x2"]),
-                int(track["y2"]),
-            ],
+            "bbox": [int(track["x1"]), int(track["y1"]), int(track["x2"]), int(track["y2"])],
         }
         if owner_id is not None:
             anomaly["owner_track_id"] = owner_id
         self.object_alert_active_until[track_id] = current_time + 4.0
         self.object_alert_payload[track_id] = dict(anomaly)
         return anomaly
+
+
+    # ── Fall Detection (fixed: uses config thresholds properly) ──────────────
 
     def _emit_fall_anomalies(
         self,
@@ -172,6 +259,11 @@ class AnomalyDetector:
         anomalies: list[dict] = []
         if fall_persistence_time is None:
             fall_persistence_time = _cfg.FALL_PERSISTENCE_TIME
+
+        frame_area = _cfg.FRAME_WIDTH * _cfg.FRAME_HEIGHT
+        min_area_ratio = getattr(_cfg, "FALL_MIN_AREA_RATIO", 0.005)
+        aspect_ratio_min = getattr(_cfg, "FALL_ASPECT_RATIO_MIN", 0.40)
+        min_area = frame_area * min_area_ratio
 
         def _iou(a: list[float], b: list[float]) -> float:
             ax1, ay1, ax2, ay2 = a
@@ -192,7 +284,6 @@ class AnomalyDetector:
 
         active_fall_keys: set[object] = set()
         emitted_keys: set[object] = set()
-        min_area = _cfg.FRAME_WIDTH * _cfg.FRAME_HEIGHT * 0.012
 
         for det in fall_detections:
             fx1, fy1, fx2, fy2 = det["bbox"]
@@ -201,27 +292,24 @@ class AnomalyDetector:
             fw = max(1.0, float(fx2) - float(fx1))
             fh = max(1.0, float(fy2) - float(fy1))
             area = fw * fh
-            # Reject false positives: tiny boxes, boxes in the top of frame
-            # (wall/ceiling objects), and upright boxes (standing people).
+
+            # Reject: top-of-frame (ceiling/wall objects)
             if float(fy2) < _cfg.FRAME_HEIGHT * 0.25:
                 continue
+            # Reject: too small (uses config FALL_MIN_AREA_RATIO)
             if area < min_area:
                 continue
-            # A fallen person is wider than tall or roughly square.
-            # Reject clearly upright boxes (tall and narrow).
-            # 0.50 ratio allows forward-collapse falls that are slightly taller than wide.
-            if (fw / fh) < 0.50:
+            # Reject: clearly upright (uses config FALL_ASPECT_RATIO_MIN)
+            if (fw / fh) < aspect_ratio_min:
                 continue
+
 
             fcx = (fx1 + fx2) / 2.0
             fcy = (fy1 + fy2) / 2.0
-            # Use larger grid cells (128px) to reduce boundary-split issues
-            # where a slightly shifting bbox crosses a cell edge and resets persistence.
             candidate_key: object = ("fall_region", int(fcx // 128), int(fcy // 128))
             best_track_id = None
 
-            # Reuse an existing candidate key when overlap is strong, so
-            # persistence survives slight box movement between frames.
+            # Reuse existing candidate key when overlap is strong
             best_existing_key = None
             best_existing_iou = 0.0
             for k, prev_box in self.fall_candidate_boxes.items():
@@ -265,8 +353,8 @@ class AnomalyDetector:
                     ),
                 }
 
-        # Keep a confirmed fall active for a short hold window so alerts do not
-        # flicker off/on when the detector briefly misses a few frames.
+
+        # Keep confirmed falls active during hold window
         for k, until_ts in list(self.fall_active_until.items()):
             if until_ts < current_time:
                 self.fall_active_until.pop(k, None)
@@ -278,25 +366,21 @@ class AnomalyDetector:
             if not payload:
                 continue
             since = self.fall_candidate_since.get(k, current_time)
-            anomalies.append(
-                {
-                    "type": "fall_detected",
-                    "duration": round(max(0.0, current_time - since), 1),
-                    "confidence": payload.get("confidence", 0.0),
-                    "position": payload.get("position"),
-                    "bbox": payload.get("bbox"),
-                    "note": "hf_fall_model_confirmed",
-                }
-            )
+            anomalies.append({
+                "type": "fall_detected",
+                "duration": round(max(0.0, current_time - since), 1),
+                "confidence": payload.get("confidence", 0.0),
+                "position": payload.get("position"),
+                "bbox": payload.get("bbox"),
+                "note": "hf_fall_model_confirmed",
+            })
 
+        # Clean up stale fall candidates
         stale_fall_keys = [
-            k
-            for k in self.fall_candidate_since
-            if (
-                k not in active_fall_keys
+            k for k in self.fall_candidate_since
+            if (k not in active_fall_keys
                 and (current_time - self.fall_last_seen_at.get(k, 0.0)) > 2.0
-                and k not in self.fall_active_until
-            )
+                and k not in self.fall_active_until)
         ]
         for k in stale_fall_keys:
             self.fall_candidate_since.pop(k, None)
@@ -304,6 +388,97 @@ class AnomalyDetector:
             self.fall_last_seen_at.pop(k, None)
 
         return anomalies
+
+
+    # ── Restricted Zone (fixed: feet-point + bbox overlap) ───────────────────
+
+    def _check_restricted_zone(self, track: dict, track_id: int,
+                               current_time: float) -> list[dict]:
+        anomalies = []
+        if not _cfg.RESTRICTED_ZONE_ENABLED:
+            return anomalies
+
+        cx, cy = self._bbox_center(track)
+        foot_x, foot_y = self._bbox_foot(track)
+        frame_w = max(1, int(track.get("frame_width", _cfg.FRAME_WIDTH)))
+        frame_h = max(1, int(track.get("frame_height", _cfg.FRAME_HEIGHT)))
+        sx = frame_w / _cfg.FRAME_WIDTH
+        sy = frame_h / _cfg.FRAME_HEIGHT
+        use_feet = getattr(_cfg, "RESTRICTED_ZONE_USE_FEET", True)
+
+        for zone in _cfg.RESTRICTED_ZONES:
+            zone_id = zone["id"]
+            zx1 = zone["x1"] * sx
+            zx2 = zone["x2"] * sx
+            zy1 = zone["y1"] * sy
+            zy2 = zone["y2"] * sy
+
+            # Check: center inside zone
+            center_inside = (zx1 <= cx <= zx2 and zy1 <= cy <= zy2)
+            # Check: foot point inside zone
+            feet_inside = (zx1 <= foot_x <= zx2 and zy1 <= foot_y <= zy2) if use_feet else False
+            # Check: bbox overlaps zone
+            bbox_overlap = self._bbox_overlaps_rect(track, zx1, zy1, zx2, zy2)
+
+            inside = center_inside or feet_inside or bbox_overlap
+
+            key = (track_id, zone_id)
+            if inside:
+                if key not in self.zone_entry_since:
+                    self.zone_entry_since[key] = current_time
+                dwell = current_time - self.zone_entry_since[key]
+                if dwell >= _cfg.RESTRICTED_ZONE_MIN_DWELL:
+                    anomalies.append({
+                        "type": "restricted_zone",
+                        "track_id": track_id,
+                        "zone_id": zone_id,
+                        "zone_name": zone.get("name", zone_id),
+                        "duration": round(dwell, 1),
+                        "position": [cx, cy],
+                    })
+            else:
+                self.zone_entry_since.pop(key, None)
+
+        return anomalies
+
+
+    # ── Loitering (fixed: hysteresis re-anchor) ──────────────────────────────
+
+    def _check_loitering(self, track: dict, track_id: int,
+                         current_time: float) -> dict | None:
+        if not _cfg.LOITERING_ENABLED:
+            return None
+        cx, cy = self._bbox_center(track)
+        reanchor_factor = getattr(_cfg, "LOITERING_REANCHOR_FACTOR", 1.5)
+
+        if track_id in self.loiter_anchor:
+            ax, ay = self.loiter_anchor[track_id]
+            dist_from_anchor = float(np.hypot(cx - ax, cy - ay))
+
+            # Hysteresis: only reset if moved beyond radius * reanchor_factor
+            # This prevents jitter near the edge from resetting the timer
+            if dist_from_anchor > _cfg.LOITERING_RADIUS_PX * reanchor_factor:
+                self.loiter_anchor[track_id] = (cx, cy)
+                self.loiter_first_seen[track_id] = current_time
+            elif dist_from_anchor <= _cfg.LOITERING_RADIUS_PX:
+                # Still within anchor radius — check dwell time
+                dwell = current_time - self.loiter_first_seen.get(track_id, current_time)
+                if dwell >= _cfg.LOITERING_TIME_THRESHOLD:
+                    return {
+                        "type": "loitering",
+                        "track_id": track_id,
+                        "duration": round(dwell, 1),
+                        "position": [cx, cy],
+                    }
+            # Between radius and radius*factor: in hysteresis band, do nothing
+        else:
+            self.loiter_anchor[track_id] = (cx, cy)
+            self.loiter_first_seen[track_id] = current_time
+
+        return None
+
+
+    # ── Main update ──────────────────────────────────────────────────────────
 
     def update(
         self,
@@ -342,108 +517,43 @@ class AnomalyDetector:
 
             if class_id == 0 and len(history) >= 5:
                 hit_streak = int(track.get("hit_streak", 0))
+                # Compute motion for fight detection
                 recent = history[-5:]
                 time_span = recent[-1][2] - recent[0][2]
-                dist = 0
+                dist = 0.0
                 for i in range(1, len(recent)):
-                    dist += np.hypot(recent[i][0] - recent[i-1][0], recent[i][1] - recent[i-1][1])
+                    dist += np.hypot(recent[i][0] - recent[i-1][0],
+                                     recent[i][1] - recent[i-1][1])
                 avg_speed = dist / time_span if time_span > 0.01 else 0.0
                 person_motion[track_id] = {
-                    "cx": cx,
-                    "cy": cy,
+                    "cx": cx, "cy": cy,
                     "avg_speed": float(avg_speed),
                     "hit_streak": hit_streak,
                 }
 
-                if hit_streak >= _cfg.RUNNING_MIN_HIT_STREAK and avg_speed > _cfg.RUNNING_SPEED_THRESHOLD:
-                    if track_id not in self.running_candidate_since:
-                        self.running_candidate_since[track_id] = current_time
-                    elif current_time - self.running_candidate_since[track_id] >= _cfg.RUNNING_PERSISTENCE_TIME:
-                        anomalies.append({
-                            "type": "running",
-                            "track_id": track_id,
-                            "avg_speed": round(avg_speed, 1),
-                            "position": [cx, cy]
-                        })
-                else:
-                    self.running_candidate_since.pop(track_id, None)
+                # Running detection (dual-metric with grace)
+                running_anomaly = self._check_running(track_id, track, history, current_time)
+                if running_anomaly:
+                    anomalies.append(running_anomaly)
 
-                # Digital fencing: unauthorized person in restricted zone.
-                if _cfg.RESTRICTED_ZONE_ENABLED:
-                    frame_w = max(1, int(track.get("frame_width", _cfg.FRAME_WIDTH)))
-                    frame_h = max(1, int(track.get("frame_height", _cfg.FRAME_HEIGHT)))
-                    sx = frame_w / _cfg.FRAME_WIDTH
-                    sy = frame_h / _cfg.FRAME_HEIGHT
-                    for zone in _cfg.RESTRICTED_ZONES:
-                        zone_id = zone["id"]
-                        zx1 = zone["x1"] * sx
-                        zx2 = zone["x2"] * sx
-                        zy1 = zone["y1"] * sy
-                        zy2 = zone["y2"] * sy
-                        inside = (
-                            zx1 <= cx <= zx2
-                            and zy1 <= cy <= zy2
-                        )
-                        key = (track_id, zone_id)
-                        if inside:
-                            if key not in self.zone_entry_since:
-                                self.zone_entry_since[key] = current_time
-                            dwell = current_time - self.zone_entry_since[key]
-                            if dwell >= _cfg.RESTRICTED_ZONE_MIN_DWELL:
-                                anomalies.append({
-                                    "type": "restricted_zone",
-                                    "track_id": track_id,
-                                    "zone_id": zone_id,
-                                    "zone_name": zone.get("name", zone_id),
-                                    "duration": round(dwell, 1),
-                                    "position": [cx, cy],
-                                })
-                        else:
-                            self.zone_entry_since.pop(key, None)
+                # Restricted zone (feet + bbox overlap)
+                zone_anomalies = self._check_restricted_zone(track, track_id, current_time)
+                anomalies.extend(zone_anomalies)
+
+                # Loitering (hysteresis)
+                loiter = self._check_loitering(track, track_id, current_time)
+                if loiter:
+                    anomalies.append(loiter)
 
             elif class_id in _cfg.UNATTENDED_CLASSES:
                 unattended = self._emit_unattended_object(
-                    track,
-                    current_time,
-                    history,
-                    person_tracks,
+                    track, current_time, history, person_tracks,
                 )
                 if unattended:
                     anomalies.append(unattended)
 
-        # ── Loitering detection ──────────────────────────────────────────────
-        if _cfg.LOITERING_ENABLED:
-            for track in tracks:
-                if track["class_id"] != 0:
-                    continue
-                track_id = track["id"]
-                cx = (track["x1"] + track["x2"]) / 2.0
-                cy = (track["y1"] + track["y2"]) / 2.0
 
-                # Check if person is within their anchor radius
-                if track_id in self.loiter_anchor:
-                    ax, ay = self.loiter_anchor[track_id]
-                    dist_from_anchor = float(np.hypot(cx - ax, cy - ay))
-
-                    if dist_from_anchor > _cfg.LOITERING_RADIUS_PX:
-                        # Moved too far — reset anchor
-                        self.loiter_anchor[track_id] = (cx, cy)
-                        self.loiter_first_seen[track_id] = current_time
-                    else:
-                        # Still within anchor — check dwell time
-                        dwell = current_time - self.loiter_first_seen.get(track_id, current_time)
-                        if dwell >= _cfg.LOITERING_TIME_THRESHOLD:
-                            anomalies.append({
-                                "type": "loitering",
-                                "track_id": track_id,
-                                "duration": round(dwell, 1),
-                                "position": [cx, cy],
-                            })
-                else:
-                    # First time seeing this person — set anchor
-                    self.loiter_anchor[track_id] = (cx, cy)
-                    self.loiter_first_seen[track_id] = current_time
-
+        # ── Fight detection ──────────────────────────────────────────────────
         if _cfg.FIGHT_DETECTION_ENABLED and len(person_motion) >= 2:
             active_fight_pairs: set[tuple[int, int]] = set()
             person_ids = sorted(person_motion.keys())
@@ -470,11 +580,9 @@ class AnomalyDetector:
                         if pair_key not in self.fight_candidate_since:
                             self.fight_candidate_since[pair_key] = current_time
                             continue
-
                         persisted = current_time - self.fight_candidate_since[pair_key]
                         if persisted >= _cfg.FIGHT_PERSISTENCE_TIME:
                             last_alert = self.fight_last_alert_at.get(pair_key, 0.0)
-                            # Keep signal visible while avoiding frame-by-frame alert spam.
                             if current_time - last_alert >= 1.5:
                                 mid_x = (p1["cx"] + p2["cx"]) / 2.0
                                 mid_y = (p1["cy"] + p2["cy"]) / 2.0
@@ -497,11 +605,14 @@ class AnomalyDetector:
                 self.fight_candidate_since.pop(k, None)
                 self.fight_last_alert_at.pop(k, None)
 
+
+        # ── Cleanup stale tracks ─────────────────────────────────────────────
         active_ids = {t["id"] for t in tracks}
         stale = [k for k in self.track_history if k not in active_ids]
         for k in stale:
             del self.track_history[k]
             self.running_candidate_since.pop(k, None)
+            self.running_last_fast_at.pop(k, None)
             self.owner_absent_since.pop(k, None)
             self.object_owner_id.pop(k, None)
             self.object_owner_last_near.pop(k, None)
@@ -520,12 +631,11 @@ class AnomalyDetector:
             self.fight_candidate_since.pop(k, None)
             self.fight_last_alert_at.pop(k, None)
 
+        # ── Fall detection ───────────────────────────────────────────────────
         if fall_detections:
             anomalies.extend(
                 self._emit_fall_anomalies(
-                    tracks,
-                    current_time,
-                    fall_detections,
+                    tracks, current_time, fall_detections,
                     fall_persistence_time=fall_persistence_time,
                 )
             )

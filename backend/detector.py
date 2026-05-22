@@ -18,7 +18,15 @@ MODEL_PATH     = YOLO_MODEL                           # e.g. "yolo11m.pt"
 ONNX_PATH      = MODEL_PATH.replace(".pt", ".onnx")   # e.g. "yolo11m.onnx"
 TARGET_CLASSES = set(COCO_CLASSES.keys())
 BAGGAGE_CLASSES = set(UNATTENDED_CLASSES)
-BAGGAGE_TRACK_CLASS_ID = 26
+# Canonical "baggage" class id used when collapsing overlapping
+# backpack/handbag/suitcase detections. Prefer 26 because the project's
+# COCO_CLASSES override maps 26 → "baggage". If 26 is removed from
+# UNATTENDED_CLASSES, fall back to the first member so the dedupe still works
+# without being a hard literal.
+if 26 in UNATTENDED_CLASSES:
+    BAGGAGE_TRACK_CLASS_ID = 26
+else:
+    BAGGAGE_TRACK_CLASS_ID = next(iter(UNATTENDED_CLASSES), 26)
 _BAGGAGE_FLOOR = max(0.05, min(0.30, BAGGAGE_CONFIDENCE_FLOOR))
 
 _model        = None

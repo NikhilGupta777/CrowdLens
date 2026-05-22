@@ -72,7 +72,7 @@ type CameraProfile = { id: string; name: string; url: string };
 const MAX_CAMERAS = 10;
 const CAMERA_PROFILE_KEY = "crowdlens_camera_profiles";
 
-const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone"]);
+const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone", "running"]);
 
 export default function Dashboard() {
   const { frame, connected } = useDetection();
@@ -153,7 +153,7 @@ export default function Dashboard() {
   useAlertSound(anomalies, soundEnabled);
   const { permission: notifPermission, enabled: notifEnabled, requestPermission } = useNotifications(anomalies);
 
-  const criticalCount = anomalies.filter((a) => DASHBOARD_CRITICAL_TYPES.has(a.type)).length;
+  const criticalCount = visibleAnomalies.filter((a) => DASHBOARD_CRITICAL_TYPES.has(a.type)).length;
   useEffect(() => {
     if (criticalCount > 0) {
       document.title = `\u26a0 CrowdLens \u2014 ${criticalCount} Alert${criticalCount > 1 ? "s" : ""}`;

@@ -12,7 +12,7 @@ const ANOMALY_META: Record<string, {
   fight_suspected:  { color: "#f43f5e", bg: "rgba(244,63,94,0.10)",   Icon: AlertCircle, label: "Fight Suspected",    severity: "CRITICAL" },
   unattended_object:{ color: "#ef4444", bg: "rgba(239,68,68,0.08)",   Icon: AlertCircle, label: "Unattended Object",  severity: "HIGH"     },
   overcrowding:     { color: "#f97316", bg: "rgba(249,115,22,0.08)",  Icon: Users,       label: "Overcrowding",       severity: "MEDIUM"   },
-  fall_detected:    { color: "#dc2626", bg: "rgba(220,38,38,0.10)",   Icon: PersonStanding, label: "Fall Detected",   severity: "HIGH"     },
+  fall_detected:    { color: "#dc2626", bg: "rgba(220,38,38,0.10)",   Icon: PersonStanding, label: "Fall Detected",   severity: "CRITICAL" },
   restricted_zone:  { color: "#eab308", bg: "rgba(234,179,8,0.10)",   Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH"     },
   loitering:        { color: "#6366f1", bg: "rgba(99,102,241,0.08)",  Icon: Users,       label: "Loitering",          severity: "MEDIUM"   },
 };
@@ -86,7 +86,13 @@ export default function AlertsFeed({ anomalies }: Props) {
               ? `${a.type}-${a.track_id}`
               : a.track_ids?.length
                 ? `${a.type}-${a.track_ids.join("-")}`
-                : `${a.type}-${i}`;
+                : a.zone_id
+                  ? `${a.type}-zone-${a.zone_id}`
+                  : a.type === "overcrowding"
+                    ? "overcrowding"
+                    : a.position
+                      ? `${a.type}-${Math.round(a.position[0] / 64)}-${Math.round(a.position[1] / 64)}`
+                      : `${a.type}-${i}`;
             return (
               <div
                 key={stableKey}
@@ -133,6 +139,9 @@ export default function AlertsFeed({ anomalies }: Props) {
                   {a.count !== undefined && (
                     <span style={{ fontSize: 10, color: "#64748b" }}>{a.count} people</span>
                   )}
+                  {(a as any).class_name && a.type === "unattended_object" && (
+                    <span style={{ fontSize: 10, color: "#f97316", fontWeight: 600 }}>{(a as any).class_name}</span>
+                  )}
                   {a.avg_speed !== undefined && (
                     <span style={{ fontSize: 10, color: "#a855f7", fontWeight: 600 }}>{a.avg_speed} px/s</span>
                   )}
@@ -147,6 +156,9 @@ export default function AlertsFeed({ anomalies }: Props) {
                   )}
                   {a.duration !== undefined && (
                     <span style={{ fontSize: 10, color: "#64748b" }}>{a.duration}s elapsed</span>
+                  )}
+                  {a.owner_absent !== undefined && (
+                    <span style={{ fontSize: 10, color: "#ef4444", fontWeight: 600 }}>owner gone {a.owner_absent}s</span>
                   )}
                   {a.confidence !== undefined && (
                     <span style={{ fontSize: 10, color: "#dc2626", fontWeight: 600 }}>

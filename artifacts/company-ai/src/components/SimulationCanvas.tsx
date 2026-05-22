@@ -8,7 +8,11 @@ export type OverlayStyle = "corners" | "dots" | "heatmap" | "chips" | "auto";
 
 function getAnomalyIds(anomalies: Anomaly[]): Set<number> {
   const ids = new Set<number>();
-  for (const a of anomalies) if (a.track_id !== undefined) ids.add(a.track_id);
+  for (const a of anomalies) {
+    if (a.track_id !== undefined) ids.add(a.track_id);
+    // Fight anomalies use track_ids array — highlight both participants
+    if (a.track_ids) for (const tid of a.track_ids) ids.add(tid);
+  }
   return ids;
 }
 
@@ -489,7 +493,7 @@ function SimulationCanvas({
           ctx.setLineDash([]);
           ctx.font = "700 10px monospace";
           ctx.fillStyle = "#f97316";
-          const txt = "⚠ UNATTENDED OBJECT";
+          const txt = `⚠ UNATTENDED OBJECT${anomaly.duration ? ` · ${anomaly.duration}s` : ""}`;
           ctx.fillText(txt, ax - ctx.measureText(txt).width / 2, ay - 38);
         } else if (anomaly.type === "running") {
           ctx.strokeStyle = `rgba(239,68,68,${0.4 + 0.3 * pulse})`;
@@ -497,6 +501,10 @@ function SimulationCanvas({
           ctx.setLineDash([4, 4]);
           ctx.beginPath(); ctx.arc(ax, ay, 50, 0, 2 * Math.PI); ctx.stroke();
           ctx.setLineDash([]);
+          ctx.font = "700 10px monospace";
+          ctx.fillStyle = "#ef4444";
+          const rtxt = `⚡ RUNNING${anomaly.avg_speed ? ` · ${anomaly.avg_speed} px/s` : ""}`;
+          ctx.fillText(rtxt, ax - ctx.measureText(rtxt).width / 2, ay - 56);
         } else if (anomaly.type === "fight_suspected") {
           ctx.strokeStyle = `rgba(244,63,94,${0.45 + 0.3 * pulse})`;
           ctx.lineWidth = 3;
@@ -516,15 +524,17 @@ function SimulationCanvas({
             ctx.setLineDash([8, 4]);
             ctx.strokeRect(bx1, by1, Math.max(1, bx2 - bx1), Math.max(1, by2 - by1));
             ctx.setLineDash([]);
+          } else {
+            // Fallback circle only when bbox is unavailable
+            ctx.strokeStyle = `rgba(220,38,38,${0.45 + 0.3 * pulse})`;
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([8, 4]);
+            ctx.beginPath(); ctx.arc(ax, ay, 42, 0, 2 * Math.PI); ctx.stroke();
+            ctx.setLineDash([]);
           }
-          ctx.strokeStyle = `rgba(220,38,38,${0.45 + 0.3 * pulse})`;
-          ctx.lineWidth = 2.5;
-          ctx.setLineDash([8, 4]);
-          ctx.beginPath(); ctx.arc(ax, ay, 42, 0, 2 * Math.PI); ctx.stroke();
-          ctx.setLineDash([]);
           ctx.font = "700 10px monospace";
           ctx.fillStyle = "#dc2626";
-          const txt = "⚠ FALL DETECTED";
+          const txt = `⚠ FALL DETECTED${anomaly.confidence ? ` · ${(anomaly.confidence * 100).toFixed(0)}%` : ""}`;
           ctx.fillText(txt, ax - ctx.measureText(txt).width / 2, ay - 50);
         } else if (anomaly.type === "restricted_zone") {
           ctx.strokeStyle = `rgba(234,179,8,${0.45 + 0.3 * pulse})`;
