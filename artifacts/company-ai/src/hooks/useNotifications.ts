@@ -56,9 +56,7 @@ export function useNotifications(anomalies: Anomaly[]) {
   }, [anomalies, enabled, permission]);
 
   useEffect(() => {
-    if (anomalies.length === 0) {
-      lastFiredRef.current.clear();
-    } else if (lastFiredRef.current.size > 200) {
+    if (lastFiredRef.current.size > 200) {
       // Prevent unbounded growth: keep only keys from current anomalies
       const currentKeys = new Set(anomalies.map((a) => `${a.type}-${a.track_id ?? ""}`));
       lastFiredRef.current = currentKeys;
