@@ -53,6 +53,12 @@ FIGHT_MIN_PAIR_SPEED = 240.0
 FIGHT_PERSISTENCE_TIME = 0.8
 FIGHT_MIN_HIT_STREAK = 3
 
+# Loitering detection settings.
+# A person loitering is one who remains within a small area for an extended time.
+LOITERING_ENABLED = True
+LOITERING_TIME_THRESHOLD = 15.0       # seconds a person must stay in area
+LOITERING_RADIUS_PX = 120.0           # max movement radius to count as loitering
+
 # Baggage-specific confidence floor. YOLO runs at this threshold so low-confidence
 # bags are not discarded internally; non-baggage classes are post-filtered at the
 # per-mode threshold (VIDEO/WEBCAM/STREAM_DETECTION_CONFIDENCE).

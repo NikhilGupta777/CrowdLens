@@ -71,10 +71,15 @@ def _center_distance(box_a: list[float], box_b: list[float]) -> float:
 
 
 def _same_baggage_object(box_a: list[float], box_b: list[float]) -> bool:
-    if _iou(box_a, box_b) >= 0.20:
+    if _iou(box_a, box_b) >= 0.35:
         return True
+    # Only use center-distance fallback for genuinely small bags where IoU is
+    # unreliable. This prevents merging two separate bags sitting side by side.
+    smaller_area = min(_box_area(box_a), _box_area(box_b))
+    if smaller_area > 4000:  # ~63x63 px — not a tiny bag
+        return False
     max_diag = max(np.sqrt(_box_area(box_a)), np.sqrt(_box_area(box_b)))
-    return _center_distance(box_a, box_b) <= max(45.0, 0.65 * max_diag)
+    return _center_distance(box_a, box_b) <= max(35.0, 0.50 * max_diag)
 
 
 def _dedupe_and_canonicalize_baggage(detections: list[dict]) -> list[dict]:

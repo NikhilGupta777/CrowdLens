@@ -49,6 +49,9 @@ from backend.config import (
     FIGHT_MIN_PAIR_SPEED,
     FIGHT_PERSISTENCE_TIME,
     FIGHT_MIN_HIT_STREAK,
+    LOITERING_ENABLED,
+    LOITERING_TIME_THRESHOLD,
+    LOITERING_RADIUS_PX,
     RESTRICTED_ZONES,
     FRAME_WIDTH,
     FRAME_HEIGHT,
@@ -97,6 +100,9 @@ current_config = {
     "fight_persistence_time": FIGHT_PERSISTENCE_TIME,
     "fight_min_hit_streak": FIGHT_MIN_HIT_STREAK,
     "alert_cooldown_secs": _ALERT_COOLDOWN_SECS,
+    "loitering_enabled": LOITERING_ENABLED,
+    "loitering_time_threshold": LOITERING_TIME_THRESHOLD,
+    "loitering_radius_px": LOITERING_RADIUS_PX,
 }
 
 stats_snapshot = {
@@ -1503,6 +1509,9 @@ class ConfigUpdate(BaseModel):
     fight_persistence_time: float | None = None
     fight_min_hit_streak: int | None = None
     alert_cooldown_secs: float | None = None
+    loitering_enabled: bool | None = None
+    loitering_time_threshold: float | None = None
+    loitering_radius_px: float | None = None
 
 
 @app.put("/api/config")
@@ -1547,6 +1556,12 @@ def update_config(body: ConfigUpdate):
     if body.alert_cooldown_secs is not None:
         _ALERT_COOLDOWN_SECS = max(0.5, float(body.alert_cooldown_secs))
         current_config["alert_cooldown_secs"] = _ALERT_COOLDOWN_SECS
+    if body.loitering_enabled is not None:
+        current_config["loitering_enabled"] = body.loitering_enabled
+    if body.loitering_time_threshold is not None:
+        current_config["loitering_time_threshold"] = max(3.0, float(body.loitering_time_threshold))
+    if body.loitering_radius_px is not None:
+        current_config["loitering_radius_px"] = max(30.0, float(body.loitering_radius_px))
     _apply_config()
     return current_config
 

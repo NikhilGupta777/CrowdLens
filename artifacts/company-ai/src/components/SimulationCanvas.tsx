@@ -537,6 +537,18 @@ function SimulationCanvas({
           const zoneText = anomaly.zone_name ?? anomaly.zone_id ?? "ZONE";
           const txt = `⚠ RESTRICTED ${zoneText}`;
           ctx.fillText(txt, ax - ctx.measureText(txt).width / 2, ay - 46);
+        } else if (anomaly.type === "loitering") {
+          ctx.strokeStyle = `rgba(99,102,241,${0.35 + 0.25 * pulse})`;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 6]);
+          ctx.beginPath(); ctx.arc(ax, ay, 44, 0, 2 * Math.PI); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = `rgba(99,102,241,${0.06 + 0.04 * pulse})`;
+          ctx.beginPath(); ctx.arc(ax, ay, 44, 0, 2 * Math.PI); ctx.fill();
+          ctx.font = "700 10px monospace";
+          ctx.fillStyle = "#6366f1";
+          const ltxt = `⚠ LOITERING${anomaly.duration ? ` · ${anomaly.duration}s` : ""}`;
+          ctx.fillText(ltxt, ax - ctx.measureText(ltxt).width / 2, ay - 52);
         }
       }
 

@@ -8,6 +8,7 @@ from backend.config import (
     RESTRICTED_ZONE_ENABLED, RESTRICTED_ZONE_MIN_DWELL, RESTRICTED_ZONES,
     FIGHT_DETECTION_ENABLED, FIGHT_PROXIMITY_PX, FIGHT_MIN_PAIR_SPEED,
     FIGHT_PERSISTENCE_TIME, FIGHT_MIN_HIT_STREAK,
+    LOITERING_ENABLED, LOITERING_TIME_THRESHOLD, LOITERING_RADIUS_PX,
     FRAME_WIDTH, FRAME_HEIGHT,
 )
 
@@ -30,6 +31,8 @@ class AnomalyDetector:
         self.fall_last_seen_at: dict[object, float] = {}
         self.fall_active_until: dict[object, float] = {}
         self.fall_active_payload: dict[object, dict] = {}
+        self.loiter_first_seen: dict[int, float] = {}
+        self.loiter_anchor: dict[int, tuple[float, float]] = {}
 
     @staticmethod
     def _bbox_center(track: dict) -> tuple[float, float]:
@@ -112,6 +115,17 @@ class AnomalyDetector:
             owner_distance = self._distance_object_to_person(track, owner_track)
             owner_near = owner_distance <= UNATTENDED_OWNER_PROXIMITY_PX
 
+        # If the assigned owner's track has completely disappeared (SORT pruned it),
+        # re-assign ownership to the nearest current person. This prevents stale
+        # owner IDs from blocking alerts indefinitely.
+        if owner_id is not None and owner_track is None:
+            if nearest_person is not None and nearest_distance <= UNATTENDED_OWNER_PROXIMITY_PX:
+                owner_id = int(nearest_person["id"])
+                self.object_owner_id[track_id] = owner_id
+                self.object_owner_last_near[track_id] = current_time
+                self.owner_absent_since.pop(track_id, None)
+                return None
+
         if owner_near:
             self.object_owner_last_near[track_id] = current_time
             self.owner_absent_since.pop(track_id, None)
@@ -191,18 +205,21 @@ class AnomalyDetector:
             area = fw * fh
             # Reject false positives: tiny boxes, boxes in the top of frame
             # (wall/ceiling objects), and upright boxes (standing people).
-            if float(fy2) < FRAME_HEIGHT * 0.38:
+            if float(fy2) < FRAME_HEIGHT * 0.25:
                 continue
             if area < min_area:
                 continue
             # A fallen person is wider than tall or roughly square.
             # Reject clearly upright boxes (tall and narrow).
-            if (fw / fh) < 0.65:
+            # 0.50 ratio allows forward-collapse falls that are slightly taller than wide.
+            if (fw / fh) < 0.50:
                 continue
 
             fcx = (fx1 + fx2) / 2.0
             fcy = (fy1 + fy2) / 2.0
-            candidate_key: object = ("fall_region", int(fcx // 96), int(fcy // 96))
+            # Use larger grid cells (128px) to reduce boundary-split issues
+            # where a slightly shifting bbox crosses a cell edge and resets persistence.
+            candidate_key: object = ("fall_region", int(fcx // 128), int(fcy // 128))
             best_track_id = None
 
             # Reuse an existing candidate key when overlap is strong, so
@@ -396,6 +413,39 @@ class AnomalyDetector:
                 if unattended:
                     anomalies.append(unattended)
 
+        # ── Loitering detection ──────────────────────────────────────────────
+        if LOITERING_ENABLED:
+            for track in tracks:
+                if track["class_id"] != 0:
+                    continue
+                track_id = track["id"]
+                cx = (track["x1"] + track["x2"]) / 2.0
+                cy = (track["y1"] + track["y2"]) / 2.0
+
+                # Check if person is within their anchor radius
+                if track_id in self.loiter_anchor:
+                    ax, ay = self.loiter_anchor[track_id]
+                    dist_from_anchor = float(np.hypot(cx - ax, cy - ay))
+
+                    if dist_from_anchor > LOITERING_RADIUS_PX:
+                        # Moved too far — reset anchor
+                        self.loiter_anchor[track_id] = (cx, cy)
+                        self.loiter_first_seen[track_id] = current_time
+                    else:
+                        # Still within anchor — check dwell time
+                        dwell = current_time - self.loiter_first_seen.get(track_id, current_time)
+                        if dwell >= LOITERING_TIME_THRESHOLD:
+                            anomalies.append({
+                                "type": "loitering",
+                                "track_id": track_id,
+                                "duration": round(dwell, 1),
+                                "position": [cx, cy],
+                            })
+                else:
+                    # First time seeing this person — set anchor
+                    self.loiter_anchor[track_id] = (cx, cy)
+                    self.loiter_first_seen[track_id] = current_time
+
         if FIGHT_DETECTION_ENABLED and len(person_motion) >= 2:
             active_fight_pairs: set[tuple[int, int]] = set()
             person_ids = sorted(person_motion.keys())
@@ -461,6 +511,8 @@ class AnomalyDetector:
             self.object_stationary_since.pop(k, None)
             self.object_alert_active_until.pop(k, None)
             self.object_alert_payload.pop(k, None)
+            self.loiter_first_seen.pop(k, None)
+            self.loiter_anchor.pop(k, None)
 
         stale_zone_keys = [k for k in self.zone_entry_since if k[0] not in active_ids]
         for k in stale_zone_keys:

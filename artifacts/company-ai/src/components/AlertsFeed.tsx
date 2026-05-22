@@ -14,6 +14,7 @@ const ANOMALY_META: Record<string, {
   overcrowding:     { color: "#f97316", bg: "rgba(249,115,22,0.08)",  Icon: Users,       label: "Overcrowding",       severity: "MEDIUM"   },
   fall_detected:    { color: "#dc2626", bg: "rgba(220,38,38,0.10)",   Icon: PersonStanding, label: "Fall Detected",   severity: "HIGH"     },
   restricted_zone:  { color: "#eab308", bg: "rgba(234,179,8,0.10)",   Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH"     },
+  loitering:        { color: "#6366f1", bg: "rgba(99,102,241,0.08)",  Icon: Users,       label: "Loitering",          severity: "MEDIUM"   },
 };
 
 interface Props {
