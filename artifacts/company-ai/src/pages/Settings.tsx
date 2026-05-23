@@ -1,4 +1,4 @@
-import { useEffect, useState, ReactNode } from "react";
+import { useEffect, useRef, useState, ReactNode } from "react";
 import { OverlayStyle } from "../components/SimulationCanvas";
 import { useIsMobile } from "../hooks/use-mobile";
 import {
@@ -521,9 +521,19 @@ export default function Settings() {
   };
   // ─────────────────────────────────────────────────────────────────────────
 
+  // Pause /api/config polling for a window after the user touches any
+  // control on this page. Without this, a 2-second poll fires mid-drag
+  // on a slider and snaps the value back to the server's last-saved
+  // state, making sliders feel "haunted" while editing.
+  const lastUserEditRef = useRef<number>(0);
+  const POLL_LOCKOUT_MS = 8000;
+  const markUserEdit = () => { lastUserEditRef.current = Date.now(); };
+
   useEffect(() => {
     const poll = async () => {
       if (document.visibilityState !== "visible") return;
+      // Skip the overwrite if the user is actively editing.
+      if (Date.now() - lastUserEditRef.current < POLL_LOCKOUT_MS) return;
       try {
         const res = await fetch("/api/config");
         const data = await res.json();
@@ -1016,7 +1026,7 @@ export default function Settings() {
             label="Restricted Zone Monitoring"
             description="Detect people entering configured restricted regions."
             enabled={config.restricted_zone_enabled}
-            onToggle={(next) => setConfig((c) => ({ ...c, restricted_zone_enabled: next }))}
+            onToggle={(next) => { markUserEdit(); setConfig((c) => ({ ...c, restricted_zone_enabled: next })); }}
           />
 
           <PremiumSlider
@@ -1028,7 +1038,7 @@ export default function Settings() {
             min={0.2}
             max={10}
             step={0.1}
-            onChange={(v) => setConfig((c) => ({ ...c, restricted_zone_min_dwell: Number(v.toFixed(1)) }))}
+            onChange={(v) => { markUserEdit(); setConfig((c) => ({ ...c, restricted_zone_min_dwell: Number(v.toFixed(1)) })); }}
             unit=" s"
           />
         </div>

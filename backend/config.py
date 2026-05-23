@@ -111,6 +111,10 @@ FIGHT_PROXIMITY_PX = 180.0
 FIGHT_MIN_PAIR_SPEED = 240.0
 FIGHT_PERSISTENCE_TIME = 0.8
 FIGHT_MIN_HIT_STREAK = 3
+# Tolerate brief speed/proximity dips (single-frame stutter, momentary YOLO
+# miss) before resetting the candidate timer. Mirrors RUNNING_RESET_GRACE_TIME
+# so fight detection has the same noise-robustness as running.
+FIGHT_RESET_GRACE_TIME = 0.4
 
 # ── Loitering detection ──────────────────────────────────────────────────────
 # A loiterer remains within a small region for an extended time. The radius

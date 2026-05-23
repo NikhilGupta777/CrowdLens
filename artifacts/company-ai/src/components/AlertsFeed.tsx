@@ -86,17 +86,19 @@ export default function AlertsFeed({ anomalies }: Props) {
               Icon: AlertCircle, label: a.type.toUpperCase(), severity: "INFO",
             };
             const { Icon } = meta;
-            const stableKey = a.track_id !== undefined
-              ? `${a.type}-${a.track_id}`
-              : a.track_ids?.length
-                ? `${a.type}-${a.track_ids.join("-")}`
-                : a.zone_id
-                  ? `${a.type}-zone-${a.zone_id}`
-                  : a.type === "overcrowding"
-                    ? "overcrowding"
-                    : a.position
-                      ? `${a.type}-${Math.round(a.position[0] / 64)}-${Math.round(a.position[1] / 64)}`
-                      : `${a.type}-${i}`;
+            const stableKey = a.type === "restricted_zone" && a.track_id !== undefined
+              ? `${a.type}-${a.track_id}-${a.zone_id ?? "unknown"}`
+              : a.track_id !== undefined
+                ? `${a.type}-${a.track_id}`
+                : a.track_ids?.length
+                  ? `${a.type}-${a.track_ids.join("-")}`
+                  : a.zone_id
+                    ? `${a.type}-zone-${a.zone_id}`
+                    : a.type === "overcrowding"
+                      ? "overcrowding"
+                      : a.position
+                        ? `${a.type}-${Math.round(a.position[0] / 64)}-${Math.round(a.position[1] / 64)}`
+                        : `${a.type}-${i}`;
             return (
               <div
                 key={stableKey}

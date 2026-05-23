@@ -41,9 +41,16 @@ const FALLBACK_HOLD_MS = 8000;
 function anomalyKey(anomaly: Anomaly): string {
   const t = anomaly.type;
 
-  // Types that are always per-track
+  // Types that are always per-track, except restricted_zone which must
+  // also include zone_id — one person can be inside two overlapping zones
+  // simultaneously, and they should appear as two distinct sticky cards
+  // rather than collapsing onto a single track-level entry.
+  if (t === "restricted_zone" && anomaly.track_id != null) {
+    const zone = anomaly.zone_id ?? "unknown";
+    return `${t}:${anomaly.track_id}:${zone}`;
+  }
   if (
-    (t === "running" || t === "restricted_zone" || t === "loitering" || t === "unattended_object") &&
+    (t === "running" || t === "loitering" || t === "unattended_object") &&
     anomaly.track_id != null
   ) {
     return `${t}:${anomaly.track_id}`;
