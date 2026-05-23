@@ -49,10 +49,12 @@ interface WebcamStatusData {
 interface RestrictedZone {
   id: string;
   name?: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
+  shape?: "rect" | "polygon";
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  points?: [number, number][];
 }
 
 const PILL_STYLE = {
