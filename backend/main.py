@@ -68,6 +68,15 @@ from backend.config import (
     IOU_THRESHOLD,
     ALERT_ESCALATION_SECS,
 )
+from backend.config import (
+    PPE_DETECTION_ENABLED,
+    PPE_CONFIDENCE_THRESHOLD,
+    FACE_DETECTION_ENABLED,
+    FACE_SCALE_FACTOR,
+    FACE_MIN_NEIGHBORS,
+    LPR_DETECTION_ENABLED,
+    LPR_CONFIDENCE_THRESHOLD,
+)
 from backend.detector import (
     _download_model,
     is_model_ready,
@@ -80,6 +89,26 @@ from backend.fall_detector import (
     get_fall_model_error,
     is_fall_model_ready,
     get_fall_loading_progress as _fall_progress,
+)
+from backend.ppe_detector import (
+    _download_ppe_model,
+    detect_ppe,
+    is_ppe_model_ready,
+    get_ppe_model_error,
+    get_ppe_loading_progress as _ppe_progress,
+)
+from backend.face_detector import (
+    _load_face_cascade,
+    detect_faces as detect_faces_cv,
+    is_face_model_ready,
+    get_face_model_error,
+)
+from backend.lpr_detector import (
+    _download_lpr_model,
+    detect_plates,
+    is_lpr_model_ready,
+    get_lpr_model_error,
+    get_lpr_loading_progress as _lpr_progress,
 )
 
 # ─── Global State ─────────────────────────────────────────────────────────────
@@ -125,6 +154,14 @@ current_config = {
     "fall_alert_hold_time": 3.0,
     "db_alert_retention": 5000,
     "alert_escalation_secs": ALERT_ESCALATION_SECS,
+    # ── PPE / Face / LPR detection ──────────────────────────────────────────
+    "ppe_detection_enabled": PPE_DETECTION_ENABLED,
+    "ppe_confidence_threshold": PPE_CONFIDENCE_THRESHOLD,
+    "face_detection_enabled": FACE_DETECTION_ENABLED,
+    "face_scale_factor": FACE_SCALE_FACTOR,
+    "face_min_neighbors": FACE_MIN_NEIGHBORS,
+    "lpr_detection_enabled": LPR_DETECTION_ENABLED,
+    "lpr_confidence_threshold": LPR_CONFIDENCE_THRESHOLD,
 }
 
 # Allowlist of cfg attribute names that _apply_config is permitted to write.
@@ -158,6 +195,14 @@ _CONFIG_ALLOWED_ATTRS = frozenset(
         "FALL_ALERT_HOLD_TIME",
         "DB_ALERT_RETENTION",
         "ALERT_ESCALATION_SECS",
+        # Phase 5 — PPE / Face / LPR
+        "PPE_DETECTION_ENABLED",
+        "PPE_CONFIDENCE_THRESHOLD",
+        "FACE_DETECTION_ENABLED",
+        "FACE_SCALE_FACTOR",
+        "FACE_MIN_NEIGHBORS",
+        "LPR_DETECTION_ENABLED",
+        "LPR_CONFIDENCE_THRESHOLD",
     ]
 )
 
@@ -813,6 +858,93 @@ def _finalize_tracks(tracks: list, anomalies: list) -> list:
     return tracks
 
 
+def _run_extra_detectors_sync(frame) -> dict:
+    """Run PPE / face / LPR detectors on a frame. Returns dict of results.
+
+    Called from thread pool executor so each detector can block without
+    stalling the asyncio event loop. Only enabled detectors are invoked.
+    """
+    results: dict = {"ppe": [], "faces": [], "plates": []}
+
+    if current_config.get("ppe_detection_enabled") and is_ppe_model_ready():
+        conf = float(current_config.get("ppe_confidence_threshold", 0.40))
+        results["ppe"] = detect_ppe(frame, conf_override=conf)
+
+    if current_config.get("face_detection_enabled") and is_face_model_ready():
+        scale = float(current_config.get("face_scale_factor", 1.3))
+        neighbors = int(current_config.get("face_min_neighbors", 5))
+        results["faces"] = detect_faces_cv(frame, scale_factor=scale, min_neighbors=neighbors)
+
+    if current_config.get("lpr_detection_enabled") and is_lpr_model_ready():
+        conf = float(current_config.get("lpr_confidence_threshold", 0.40))
+        results["plates"] = detect_plates(frame, conf_override=conf)
+
+    return results
+
+
+def _build_extra_anomalies(extra: dict, frame_width: int, frame_height: int) -> list[dict]:
+    """Convert PPE/face/LPR detections into anomaly dicts for the alert pipeline.
+
+    Scales bboxes to the canonical 1280x720 canvas space.
+    """
+    anomalies: list[dict] = []
+    scale_x = FRAME_WIDTH / max(1, frame_width)
+    scale_y = FRAME_HEIGHT / max(1, frame_height)
+
+    # PPE violations: only "NO-Hardhat" detections trigger an alert
+    for det in extra.get("ppe", []):
+        label = det.get("label", "")
+        if "no" in label.lower() or "no-" in label.lower():
+            x1, y1, x2, y2 = det["bbox"]
+            sx1 = int(x1 * scale_x)
+            sy1 = int(y1 * scale_y)
+            sx2 = int(x2 * scale_x)
+            sy2 = int(y2 * scale_y)
+            cx = (sx1 + sx2) / 2.0
+            cy = (sy1 + sy2) / 2.0
+            anomalies.append({
+                "type": "ppe_violation",
+                "ppe_label": label,
+                "confidence": det["confidence"],
+                "position": [cx, cy],
+                "bbox": [sx1, sy1, sx2, sy2],
+            })
+
+    # Face detections
+    for det in extra.get("faces", []):
+        x1, y1, x2, y2 = det["bbox"]
+        sx1 = int(x1 * scale_x)
+        sy1 = int(y1 * scale_y)
+        sx2 = int(x2 * scale_x)
+        sy2 = int(y2 * scale_y)
+        cx = (sx1 + sx2) / 2.0
+        cy = (sy1 + sy2) / 2.0
+        anomalies.append({
+            "type": "face_detected",
+            "confidence": det["confidence"],
+            "position": [cx, cy],
+            "bbox": [sx1, sy1, sx2, sy2],
+        })
+
+    # License plate detections
+    for det in extra.get("plates", []):
+        x1, y1, x2, y2 = det["bbox"]
+        sx1 = int(x1 * scale_x)
+        sy1 = int(y1 * scale_y)
+        sx2 = int(x2 * scale_x)
+        sy2 = int(y2 * scale_y)
+        cx = (sx1 + sx2) / 2.0
+        cy = (sy1 + sy2) / 2.0
+        anomalies.append({
+            "type": "lpr_detected",
+            "confidence": det["confidence"],
+            "position": [cx, cy],
+            "bbox": [sx1, sy1, sx2, sy2],
+        })
+
+    return anomalies
+
+
 def _encode_preview(frame) -> str:
     """Encode a cv2 frame as a base64 JPEG for WebSocket transmission."""
     import cv2
@@ -944,6 +1076,13 @@ async def video_processing_loop():
                 now,
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
+            )
+            # PPE / Face / LPR detections (run in thread pool)
+            extra = await loop.run_in_executor(
+                None, _run_extra_detectors_sync, frame_resized
+            )
+            anomalies.extend(
+                _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
             )
             tracks = _finalize_tracks(tracks, anomalies)
 
@@ -1347,6 +1486,11 @@ async def stream_processing_loop(url: str):
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
             )
+            # PPE / Face / LPR detections (run in thread pool)
+            extra = await loop.run_in_executor(
+                None, _run_extra_detectors_sync, frame
+            )
+            anomalies.extend(_build_extra_anomalies(extra, W, H))
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -1458,6 +1602,13 @@ async def webcam_processing_loop():
                 now,
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
+            )
+            # PPE / Face / LPR detections (run in thread pool)
+            extra = await loop.run_in_executor(
+                None, _run_extra_detectors_sync, frame
+            )
+            anomalies.extend(
+                _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
             )
             tracks = _finalize_tracks(tracks, anomalies)
 
@@ -1571,6 +1722,13 @@ async def lifespan(app: FastAPI):
     thread.start()
     fall_thread = threading.Thread(target=_download_fall_model, daemon=True)
     fall_thread.start()
+    # PPE / Face / LPR model loading
+    ppe_thread = threading.Thread(target=_download_ppe_model, daemon=True)
+    ppe_thread.start()
+    face_thread = threading.Thread(target=_load_face_cascade, daemon=True)
+    face_thread.start()
+    lpr_thread = threading.Thread(target=_download_lpr_model, daemon=True)
+    lpr_thread.start()
     escalation_task = asyncio.create_task(_alert_escalation_loop())
     yield
     escalation_task.cancel()
@@ -1841,6 +1999,42 @@ def get_config():
     }
 
 
+# ─── PPE / Face / LPR status endpoints ─────────────────────────────────────────
+
+
+@app.get("/api/ppe/status")
+def get_ppe_status():
+    return {
+        "enabled": bool(current_config.get("ppe_detection_enabled")),
+        "model_ready": is_ppe_model_ready(),
+        "model_error": get_ppe_model_error(),
+        "model_progress": _ppe_progress(),
+        "confidence_threshold": current_config.get("ppe_confidence_threshold", 0.40),
+    }
+
+
+@app.get("/api/face/status")
+def get_face_status():
+    return {
+        "enabled": bool(current_config.get("face_detection_enabled")),
+        "model_ready": is_face_model_ready(),
+        "model_error": get_face_model_error(),
+        "scale_factor": current_config.get("face_scale_factor", 1.3),
+        "min_neighbors": current_config.get("face_min_neighbors", 5),
+    }
+
+
+@app.get("/api/lpr/status")
+def get_lpr_status():
+    return {
+        "enabled": bool(current_config.get("lpr_detection_enabled")),
+        "model_ready": is_lpr_model_ready(),
+        "model_error": get_lpr_model_error(),
+        "model_progress": _lpr_progress(),
+        "confidence_threshold": current_config.get("lpr_confidence_threshold", 0.40),
+    }
+
+
 # ─── Restricted zones CRUD ────────────────────────────────────────────────────
 
 _ZONES_PATH = os.path.join(os.path.dirname(__file__), "zones.json")
@@ -2024,6 +2218,14 @@ class ConfigUpdate(BaseModel):
     object_association_distance_px: float | None = None
     db_alert_retention: int | None = None
     alert_escalation_secs: float | None = None
+    # Phase 5 — PPE / Face / LPR
+    ppe_detection_enabled: bool | None = None
+    ppe_confidence_threshold: float | None = None
+    face_detection_enabled: bool | None = None
+    face_scale_factor: float | None = None
+    face_min_neighbors: int | None = None
+    lpr_detection_enabled: bool | None = None
+    lpr_confidence_threshold: float | None = None
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -2113,6 +2315,21 @@ def update_config(body: ConfigUpdate):
     if body.alert_escalation_secs is not None:
         # 0 disables escalation entirely.
         current_config["alert_escalation_secs"] = _clamp(body.alert_escalation_secs, 0.0, 3600.0)
+    # ── Phase 5: PPE / Face / LPR ────────────────────────────────────────
+    if body.ppe_detection_enabled is not None:
+        current_config["ppe_detection_enabled"] = bool(body.ppe_detection_enabled)
+    if body.ppe_confidence_threshold is not None:
+        current_config["ppe_confidence_threshold"] = _clamp(body.ppe_confidence_threshold, 0.1, 0.95)
+    if body.face_detection_enabled is not None:
+        current_config["face_detection_enabled"] = bool(body.face_detection_enabled)
+    if body.face_scale_factor is not None:
+        current_config["face_scale_factor"] = _clamp(body.face_scale_factor, 1.05, 2.0)
+    if body.face_min_neighbors is not None:
+        current_config["face_min_neighbors"] = int(_clamp(body.face_min_neighbors, 1, 20))
+    if body.lpr_detection_enabled is not None:
+        current_config["lpr_detection_enabled"] = bool(body.lpr_detection_enabled)
+    if body.lpr_confidence_threshold is not None:
+        current_config["lpr_confidence_threshold"] = _clamp(body.lpr_confidence_threshold, 0.1, 0.95)
     unknown_from_apply = _apply_config()
     # Surface unknown / typo'd keys back to the caller so the user sees the
     # mistake in the API response, not just in the server log. Two sources:

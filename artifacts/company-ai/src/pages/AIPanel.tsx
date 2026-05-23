@@ -2,7 +2,7 @@ import { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   Bot, Brain, FileText, MessageSquare, Mic2, Send, Sparkles,
   AlertCircle, Loader2, ChevronDown, ChevronUp, RefreshCw, Zap,
-  ShieldAlert, Users, UserRoundX, Package, Camera,
+  ShieldAlert, Users, UserRoundX, Package, Camera, HardHat, ScanFace, Car,
 } from "lucide-react";
 import { useDetection } from "../context/DetectionContext";
 import { useIsMobile } from "../hooks/use-mobile";
@@ -27,6 +27,9 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
   restricted_zone:   { color: "#eab308", Icon: ShieldAlert,  label: "Restricted Zone" },
   manual_snapshot:   { color: "#60a5fa", Icon: Camera,       label: "Manual Snapshot" },
   loitering:         { color: "#6366f1", Icon: AlertCircle,  label: "Loitering" },
+  ppe_violation:     { color: "#f59e0b", Icon: HardHat,      label: "PPE Violation" },
+  face_detected:     { color: "#06b6d4", Icon: ScanFace,     label: "Face Detected" },
+  lpr_detected:      { color: "#84cc16", Icon: Car,          label: "License Plate" },
 };
 
 const card: CSSProperties = {

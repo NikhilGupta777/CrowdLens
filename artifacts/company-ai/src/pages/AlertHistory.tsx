@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { AlertCircle, BarChart2, Camera, CheckCheck, Clock, Download, Filter, Package, RefreshCw, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap } from "lucide-react";
+import { AlertCircle, BarChart2, Camera, CheckCheck, Clock, Download, Filter, HardHat, Package, RefreshCw, ScanFace, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap, Car } from "lucide-react";
 import { useIsMobile } from "../hooks/use-mobile";
 import { AlertRecord } from "../types";
 import {
@@ -24,6 +24,9 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
   restricted_zone:   { color: "#eab308", Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH" },
   loitering:         { color: "#6366f1", Icon: Clock,       label: "Loitering",          severity: "MEDIUM" },
   manual_snapshot:   { color: "#60a5fa", Icon: Camera,      label: "Manual Snapshot",    severity: "INFO" },
+  ppe_violation:     { color: "#f59e0b", Icon: HardHat,     label: "PPE Violation",      severity: "HIGH" },
+  face_detected:     { color: "#06b6d4", Icon: ScanFace,    label: "Face Detected",      severity: "INFO" },
+  lpr_detected:      { color: "#84cc16", Icon: Car,         label: "License Plate",      severity: "INFO" },
 };
 
 const FILTER_OPTIONS = [
@@ -36,6 +39,9 @@ const FILTER_OPTIONS = [
   "fall_detected",
   "restricted_zone",
   "loitering",
+  "ppe_violation",
+  "face_detected",
+  "lpr_detected",
   "manual_snapshot",
 ] as const;
 
@@ -49,6 +55,9 @@ interface ChartBucket {
   restricted_zone: number;
   loitering: number;
   manual_snapshot: number;
+  ppe_violation: number;
+  face_detected: number;
+  lpr_detected: number;
 }
 
 function escapeCsvValue(value: string | number | undefined | null): string {
@@ -151,6 +160,9 @@ function buildChartData(alerts: AlertRecord[]): ChartBucket[] {
       restricted_zone: 0,
       loitering: 0,
       manual_snapshot: 0,
+      ppe_violation: 0,
+      face_detected: 0,
+      lpr_detected: 0,
     };
   }
 
@@ -190,6 +202,7 @@ function renderDetails(record: AlertRecord): string {
   if (record.anomaly.duration !== undefined) parts.push(`${record.anomaly.duration}s`);
   if (record.anomaly.confidence !== undefined) parts.push(`conf ${(record.anomaly.confidence * 100).toFixed(0)}%`);
   if (record.anomaly.owner_absent !== undefined) parts.push(`away ${record.anomaly.owner_absent}s`);
+  if (record.anomaly.ppe_label) parts.push(record.anomaly.ppe_label);
   if (record.anomaly.zone_name) parts.push(record.anomaly.zone_name);
   else if (record.anomaly.zone_id) parts.push(record.anomaly.zone_id);
   if (record.anomaly.note) parts.push(record.anomaly.note);
@@ -488,6 +501,9 @@ export default function AlertHistory() {
             && d.restricted_zone === 0
             && d.loitering === 0
             && d.manual_snapshot === 0
+            && d.ppe_violation === 0
+            && d.face_detected === 0
+            && d.lpr_detected === 0
           )) ? (
             <div style={{ textAlign: "center", padding: "20px 0", color: "var(--app-text-muted)", fontSize: 13 }}>
               No recent alert data - alerts will appear here as they occur
@@ -515,6 +531,9 @@ export default function AlertHistory() {
                 <Bar dataKey="restricted_zone" name="Restricted Zone" fill="#eab308" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="loitering" name="Loitering" fill="#6366f1" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="manual_snapshot" name="Manual Snapshot" fill="#60a5fa" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="ppe_violation" name="PPE Violation" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="face_detected" name="Face Detected" fill="#06b6d4" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="lpr_detected" name="License Plate" fill="#84cc16" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}

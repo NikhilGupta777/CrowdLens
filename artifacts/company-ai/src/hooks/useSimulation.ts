@@ -27,7 +27,10 @@ export interface Anomaly {
     | "fall_detected"
     | "restricted_zone"
     | "fight_suspected"
-    | "loitering";
+    | "loitering"
+    | "ppe_violation"
+    | "face_detected"
+    | "lpr_detected";
   track_id?: number;
   track_ids?: number[];
   count?: number;
@@ -52,6 +55,7 @@ export interface Anomaly {
   zone_name?: string;
   note?: string;
   class_name?: string;
+  ppe_label?: string;
   bbox?: [number, number, number, number];
   position: [number, number] | null;
 }
