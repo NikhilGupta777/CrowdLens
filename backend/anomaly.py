@@ -14,6 +14,10 @@ class AnomalyDetector:
         self.zone_entry_since: dict[tuple[int, str], float] = {}
         self.fight_candidate_since: dict[tuple[int, int], float] = {}
         self.fight_last_alert_at: dict[tuple[int, int], float] = {}
+        # Last frame in which a pair satisfied close+fast+stable. Used by the
+        # fight grace-time tolerance so a single-frame dip doesn't wipe
+        # accumulated persistence (mirrors RUNNING_RESET_GRACE_TIME).
+        self.fight_last_qualifying_at: dict[tuple[int, int], float] = {}
         self.owner_absent_since: dict[int, float] = {}
         self.object_owner_id: dict[int, int] = {}
         self.object_owner_last_near: dict[int, float] = {}
@@ -793,6 +797,14 @@ class AnomalyDetector:
 
             if class_id == 0 and len(history) >= 5:
                 hit_streak = int(track.get("hit_streak", 0))
+                # Skip behavioural timers for predicted (held-over) tracks.
+                # SORT keeps person tracks alive for up to MAX_AGE = 30 frames
+                # after detection is lost; without this guard, loitering/zone
+                # dwell/running timers keep accumulating wall-clock time even
+                # though the person already left the frame, producing false
+                # alerts when the next real detection re-arrives.
+                is_predicted = bool(track.get("predicted", False))
+
                 # Compute motion for fight detection
                 recent = history[-5:]
                 time_span = recent[-1][2] - recent[0][2]
@@ -801,11 +813,21 @@ class AnomalyDetector:
                     dist += np.hypot(recent[i][0] - recent[i-1][0],
                                      recent[i][1] - recent[i-1][1])
                 avg_speed = dist / time_span if time_span > 0.01 else 0.0
+                # Predicted tracks contribute 0 speed to fight pairing too:
+                # they have no fresh detection so any apparent motion is
+                # purely Kalman extrapolation.
                 person_motion[track_id] = {
                     "cx": cx, "cy": cy,
-                    "avg_speed": float(avg_speed),
+                    "avg_speed": 0.0 if is_predicted else float(avg_speed),
                     "hit_streak": hit_streak,
+                    "predicted": is_predicted,
                 }
+
+                if is_predicted:
+                    # Don't run loitering / zone / running on phantom tracks,
+                    # but keep history so when the real detection returns we
+                    # have continuity for body-heights/sec calculations.
+                    continue
 
                 # Running detection (dual-metric with grace)
                 running_anomaly = self._check_running(track_id, track, history, current_time)
@@ -831,6 +853,14 @@ class AnomalyDetector:
 
         # ── Fight detection ──────────────────────────────────────────────────
         if _cfg.FIGHT_DETECTION_ENABLED and len(person_motion) >= 2:
+            # Tolerate brief speed dips / proximity blips before resetting
+            # the fight candidate timer. Mirrors RUNNING_RESET_GRACE_TIME.
+            # Without this, a single-frame stutter wipes accumulated
+            # persistence and the alert never fires for borderline pairs.
+            fight_grace = float(getattr(_cfg, "FIGHT_RESET_GRACE_TIME", 0.4))
+            if not hasattr(self, "fight_last_qualifying_at"):
+                self.fight_last_qualifying_at = {}
+
             active_fight_pairs: set[tuple[int, int]] = set()
             person_ids = sorted(person_motion.keys())
             for i in range(len(person_ids)):
@@ -840,6 +870,13 @@ class AnomalyDetector:
                     p1 = person_motion[id1]
                     p2 = person_motion[id2]
                     pair_key = (id1, id2)
+
+                    # Skip pairs where either track is predicted — pair speed
+                    # was already zeroed for predicted tracks above, but we
+                    # also want them out of the active set so cleanup logic
+                    # doesn't preserve a phantom timer indefinitely.
+                    if p1.get("predicted") or p2.get("predicted"):
+                        continue
 
                     close_enough = np.hypot(p1["cx"] - p2["cx"], p1["cy"] - p2["cy"]) <= _cfg.FIGHT_PROXIMITY_PX
                     fast_both = (
@@ -851,7 +888,9 @@ class AnomalyDetector:
                         and p2["hit_streak"] >= _cfg.FIGHT_MIN_HIT_STREAK
                     )
 
-                    if close_enough and fast_both and stable_tracks:
+                    qualifies = close_enough and fast_both and stable_tracks
+                    if qualifies:
+                        self.fight_last_qualifying_at[pair_key] = current_time
                         active_fight_pairs.add(pair_key)
                         if pair_key not in self.fight_candidate_since:
                             self.fight_candidate_since[pair_key] = current_time
@@ -873,13 +912,23 @@ class AnomalyDetector:
                                 })
                                 self.fight_last_alert_at[pair_key] = current_time
                     else:
-                        self.fight_candidate_since.pop(pair_key, None)
-                        self.fight_last_alert_at.pop(pair_key, None)
+                        # Did not qualify this frame — apply grace-time tolerance.
+                        last_qualified = self.fight_last_qualifying_at.get(pair_key)
+                        if last_qualified is not None and (current_time - last_qualified) <= fight_grace:
+                            # Still inside grace window — keep the candidate alive
+                            # so a 1-frame stutter doesn't reset persistence.
+                            active_fight_pairs.add(pair_key)
+                        else:
+                            # Out of grace — drop the timer.
+                            self.fight_candidate_since.pop(pair_key, None)
+                            self.fight_last_alert_at.pop(pair_key, None)
+                            self.fight_last_qualifying_at.pop(pair_key, None)
 
             stale_fights = [k for k in self.fight_candidate_since if k not in active_fight_pairs]
             for k in stale_fights:
                 self.fight_candidate_since.pop(k, None)
                 self.fight_last_alert_at.pop(k, None)
+                self.fight_last_qualifying_at.pop(k, None)
 
 
         # ── Cleanup stale tracks ─────────────────────────────────────────────
@@ -930,6 +979,7 @@ class AnomalyDetector:
         for k in stale_fight_keys:
             self.fight_candidate_since.pop(k, None)
             self.fight_last_alert_at.pop(k, None)
+            self.fight_last_qualifying_at.pop(k, None)
 
         # ── Fall detection ───────────────────────────────────────────────────
         if fall_detections:

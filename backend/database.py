@@ -50,6 +50,26 @@ def _init_db_sync():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC)")
+
+    # Forward-migration for DBs created before snapshot_url existed.
+    # Without this, a user upgrading from an older build hits
+    # `sqlite3.OperationalError: no such column: snapshot_url` on the very
+    # first alert insert, because CREATE TABLE IF NOT EXISTS only runs when
+    # the table is missing and never adds columns to an existing table.
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    if "snapshot_url" not in cols:
+        try:
+            conn.execute("ALTER TABLE alerts ADD COLUMN snapshot_url TEXT")
+        except sqlite3.OperationalError as e:
+            # If the column races in (multiple processes, very unlikely on
+            # local single-user) just log and continue.
+            print(f"[database] ALTER TABLE add snapshot_url skipped: {e}")
+    if "source" not in cols:
+        try:
+            conn.execute("ALTER TABLE alerts ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError as e:
+            print(f"[database] ALTER TABLE add source skipped: {e}")
+
     conn.commit()
 
 
