@@ -57,6 +57,37 @@ interface RestrictedZone {
   points?: [number, number][];
 }
 
+// Map backend loading-stage tokens (see backend/detector.py + fall_detector.py)
+// into human-readable phrases for the connecting overlay. Anything not in
+// this map falls back to a Title-cased version of the raw stage so future
+// stages added on the backend show up gracefully without a frontend change.
+const YOLO_STAGE_LABELS: Record<string, string> = {
+  idle: "Detection engine starting…",
+  starting: "Detection engine starting…",
+  exporting_onnx: "Exporting YOLO11m to ONNX (one-time, ~30 s)…",
+  loading_onnx: "Loading YOLO11m (ONNX)…",
+  warmup_onnx_gpu: "Warming up YOLO11m on GPU…",
+  warmup_onnx_cpu: "Warming up YOLO11m on CPU…",
+  loading_pytorch: "Loading YOLO11m (PyTorch fallback)…",
+  warmup_pytorch_gpu: "Warming up YOLO11m on GPU…",
+  warmup_pytorch_cpu: "Warming up YOLO11m on CPU…",
+  ready: "YOLO11m ready",
+  error: "YOLO11m failed to load",
+};
+
+const FALL_STAGE_LABELS: Record<string, string> = {
+  idle: "Fall model queued…",
+  downloading: "Downloading fall-detection model from Hugging Face…",
+  warmup: "Warming up fall-detection model…",
+  ready: "Fall-detection model ready",
+  error: "Fall-detection model failed to load",
+};
+
+function describeStage(stage: string | undefined, labels: Record<string, string>): string {
+  if (!stage) return "";
+  return labels[stage] ?? stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 const PILL_STYLE = {
   background: "var(--app-card-bg)",
   border: "1px solid var(--app-card-border)",
@@ -73,6 +104,45 @@ type SourceMode = "idle" | "webcam" | "video" | "stream";
 type CameraProfile = { id: string; name: string; url: string };
 const MAX_CAMERAS = 10;
 const CAMERA_PROFILE_KEY = "crowdlens_camera_profiles";
+// Storage shape (v=1): { v: 1, profiles: CameraProfile[] }. The legacy
+// (pre-versioning) shape was a bare CameraProfile[]. loadCameraProfiles()
+// accepts both so users upgrading from an older build keep their saved
+// camera URLs without manual intervention.
+interface CameraProfileBlobV1 { v: 1; profiles: CameraProfile[] }
+type CameraProfileBlob = CameraProfileBlobV1 | CameraProfile[];
+
+function loadCameraProfiles(): CameraProfile[] {
+  try {
+    const raw = localStorage.getItem(CAMERA_PROFILE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as CameraProfileBlob;
+    if (Array.isArray(parsed)) {
+      // Legacy flat array — accept and rewrite on next save.
+      return parsed.slice(0, MAX_CAMERAS).filter(isValidProfile);
+    }
+    if (parsed && typeof parsed === "object" && parsed.v === 1) {
+      return (parsed.profiles ?? []).slice(0, MAX_CAMERAS).filter(isValidProfile);
+    }
+  } catch {
+    // Corrupt JSON — start clean
+  }
+  return [];
+}
+
+function isValidProfile(p: unknown): p is CameraProfile {
+  if (!p || typeof p !== "object") return false;
+  const x = p as Record<string, unknown>;
+  return typeof x.id === "string" && typeof x.name === "string" && typeof x.url === "string";
+}
+
+function saveCameraProfiles(profiles: CameraProfile[]) {
+  try {
+    const blob: CameraProfileBlobV1 = { v: 1, profiles: profiles.slice(0, MAX_CAMERAS) };
+    localStorage.setItem(CAMERA_PROFILE_KEY, JSON.stringify(blob));
+  } catch {
+    // QuotaExceededError or storage disabled
+  }
+}
 
 const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone", "running"]);
 
@@ -94,16 +164,7 @@ export default function Dashboard() {
   const [streamStatus, setStreamStatus] = useState<StreamStatusData | null>(null);
   const [streamUrl, setStreamUrl] = useState("");
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [cameraProfiles, setCameraProfiles] = useState<CameraProfile[]>(() => {
-    try {
-      const raw = localStorage.getItem(CAMERA_PROFILE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.slice(0, MAX_CAMERAS) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [cameraProfiles, setCameraProfiles] = useState<CameraProfile[]>(() => loadCameraProfiles());
   const [cameraNameDraft, setCameraNameDraft] = useState("");
   const [captureInfo, setCaptureInfo] = useState<string | null>(null);
   const [capturingSnapshot, setCapturingSnapshot] = useState(false);
@@ -111,6 +172,21 @@ export default function Dashboard() {
   const [webcamStatus, setWebcamStatus] = useState<WebcamStatusData | null>(null);
   const [restrictedZones, setRestrictedZones] = useState<RestrictedZone[]>([]);
   const [zoneEnabled, setZoneEnabled] = useState(true);
+
+  // Health-poll state. Backend exposes model_progress.stage on /api/health
+  // for both the YOLO model and the fall-detection model; we surface those
+  // strings in the "Connecting…" overlay so the user knows whether they
+  // are waiting on a 30-second ONNX export, a 2-minute Hugging Face
+  // download, or just a few seconds of warmup. Polled every 1.5 s only
+  // while the WebSocket is disconnected.
+  const [healthProgress, setHealthProgress] = useState<{
+    yolo_stage?: string;
+    yolo_ready?: boolean;
+    yolo_error?: string | null;
+    fall_stage?: string;
+    fall_ready?: boolean;
+    fall_error?: string | null;
+  }>({});
 
   // Camera device enumeration (USB webcam selector)
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
@@ -228,6 +304,37 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
+  // Poll /api/health while disconnected to show model-loading stage.
+  // Stops polling once connected to keep network noise down. The 1.5 s
+  // cadence matches the other status polls so we don't add a new burst.
+  useEffect(() => {
+    if (connected) return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch("/api/health");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setHealthProgress({
+          yolo_stage: data.model_progress?.stage,
+          yolo_ready: data.model_progress?.ready,
+          yolo_error: data.model_progress?.error,
+          fall_stage: data.fall_model_progress?.stage,
+          fall_ready: data.fall_model_progress?.ready,
+          fall_error: data.fall_model_progress?.error,
+        });
+      } catch {
+        // Backend not responding at all — leave previous stage visible
+      }
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [connected]);
+
   // Enumerate camera devices on mount and whenever permissions change
   useEffect(() => {
     const enumerate = async () => {
@@ -242,7 +349,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(CAMERA_PROFILE_KEY, JSON.stringify(cameraProfiles.slice(0, MAX_CAMERAS)));
+    saveCameraProfiles(cameraProfiles);
   }, [cameraProfiles]);
 
   useEffect(() => {
@@ -1169,24 +1276,70 @@ export default function Dashboard() {
             background: "#141414", position: "relative",
             boxShadow: "0 18px 45px rgba(22,20,18,0.12)",
           }}>
-            {!connected && (
-              <div style={{
-                position: "absolute", inset: 0, background: "rgba(6,10,18,0.88)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                flexDirection: "column", gap: 14, zIndex: 10, backdropFilter: "blur(4px)",
-              }}>
-                <Cpu size={36} color="#1e3a5f" />
-                <div style={{ color: "#64748b", fontSize: 14, fontWeight: 600 }}>Connecting to detection engine…</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {[0, 1, 2].map(i => (
-                    <div key={i} style={{
-                      width: 8, height: 8, borderRadius: "50%", background: "#1e40af",
-                      animation: `bounce-dot 1.2s ${i * 0.2}s infinite`,
-                    }} />
-                  ))}
+            {!connected && (() => {
+              // Decide what message to show. Priority:
+              // 1. Hard error from either model -> show error, stop pulsing dots
+              // 2. YOLO not ready -> show YOLO stage (gates everything else)
+              // 3. Fall not ready -> show fall stage
+              // 4. Both ready -> bare "Connecting…" while WebSocket retries
+              const yoloErr = healthProgress.yolo_error;
+              const fallErr = healthProgress.fall_error;
+              const yoloReady = healthProgress.yolo_ready;
+              const fallReady = healthProgress.fall_ready;
+              let primary = "Connecting to detection engine…";
+              let detail: string | null = null;
+              let isError = false;
+              if (yoloErr) {
+                primary = "YOLO11m failed to load";
+                detail = yoloErr;
+                isError = true;
+              } else if (fallErr) {
+                primary = "Fall-detection model failed to load";
+                detail = fallErr;
+                isError = true;
+              } else if (!yoloReady && healthProgress.yolo_stage) {
+                primary = describeStage(healthProgress.yolo_stage, YOLO_STAGE_LABELS);
+              } else if (!fallReady && healthProgress.fall_stage) {
+                primary = describeStage(healthProgress.fall_stage, FALL_STAGE_LABELS);
+              } else if (yoloReady && fallReady) {
+                primary = "Models ready — opening WebSocket…";
+              }
+              return (
+                <div style={{
+                  position: "absolute", inset: 0, background: "rgba(6,10,18,0.88)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  flexDirection: "column", gap: 14, zIndex: 10, backdropFilter: "blur(4px)",
+                  padding: 20, textAlign: "center",
+                }}>
+                  <Cpu size={36} color={isError ? "#ef4444" : "#1e3a5f"} />
+                  <div style={{ color: isError ? "#ef4444" : "#94a3b8", fontSize: 14, fontWeight: 600, maxWidth: 520 }}>
+                    {primary}
+                  </div>
+                  {detail && (
+                    <div style={{ color: "#64748b", fontSize: 11, maxWidth: 520, lineHeight: 1.5, fontFamily: "monospace" }}>
+                      {detail}
+                    </div>
+                  )}
+                  {!isError && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[0, 1, 2].map(i => (
+                        <div key={i} style={{
+                          width: 8, height: 8, borderRadius: "50%", background: "#1e40af",
+                          animation: `bounce-dot 1.2s ${i * 0.2}s infinite`,
+                        }} />
+                      ))}
+                    </div>
+                  )}
+                  {/* Tiny stage tags so power users can see the raw stage strings */}
+                  {(healthProgress.yolo_stage || healthProgress.fall_stage) && (
+                    <div style={{ fontSize: 10, color: "#475569", fontFamily: "monospace", opacity: 0.8 }}>
+                      yolo: {healthProgress.yolo_stage ?? "?"}{" · "}
+                      fall: {healthProgress.fall_stage ?? "?"}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
             <SimulationCanvas
               tracks={tracks}
               anomalies={anomalies}

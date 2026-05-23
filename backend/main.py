@@ -2294,6 +2294,56 @@ def _gemini_chat(system: str, messages: list[dict], max_tokens: int = 512) -> st
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
+def _gemini_chat_stream(system: str, messages: list[dict], max_tokens: int = 2048):
+    """Generator that yields incremental text chunks from Gemini's
+    streamGenerateContent endpoint. Each yielded value is a string fragment
+    of the assistant's reply.
+
+    The Gemini SSE format sends `data: <json>` lines where each JSON has
+    candidates[0].content.parts[0].text containing the *new* text fragment
+    (cumulative deltas, not the full message). We extract those deltas and
+    let the caller concat or stream them to the client.
+    """
+    import urllib.request as _req
+
+    contents = []
+    for m in messages:
+        role = "model" if m.get("role") == "assistant" else m.get("role", "user")
+        contents.append({"role": role, "parts": [{"text": m.get("content", "")}]})
+    body = json.dumps({
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }).encode()
+    # streamGenerateContent with alt=sse gives us one Server-Sent-Events
+    # frame per generation step (typically one chunk per few tokens).
+    url = _gemini_url("streamGenerateContent") + "?alt=sse"
+    req = _req.Request(url, data=body, headers=_gemini_headers())
+    with _req.urlopen(req, timeout=60) as resp:
+        # Read line-by-line; each SSE record starts with "data: " and is
+        # terminated by a blank line. We don't need to handle multi-line
+        # events because Gemini sends each JSON on a single data line.
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            payload = line[len("data:"):].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            try:
+                parts = obj["candidates"][0]["content"]["parts"]
+            except (KeyError, IndexError, TypeError):
+                continue
+            for p in parts:
+                txt = p.get("text") if isinstance(p, dict) else None
+                if txt:
+                    yield txt
+
+
 class AIReportRequest(BaseModel):
     alert: dict
 
@@ -2369,33 +2419,75 @@ async def generate_ai_report(req: AIReportRequest):
 
 @app.post("/api/ai/chat")
 async def ai_chat(req: AIChatRequest):
-    """SSE chat with Gemini about alert history."""
+    """SSE chat with Gemini about alert history.
+
+    Uses Gemini's streamGenerateContent endpoint so the client sees text
+    appear word-by-word instead of all-at-once after a 5-second wait.
+    The blocking urllib reader runs in a worker thread; chunks are pushed
+    into an asyncio.Queue and forwarded as SSE `data:` frames.
+    """
 
     async def stream():
+        history_text = ""
+        if req.alert_history:
+            lines = [_format_alert_for_ai(a) for a in req.alert_history[:50]]
+            history_text = "\n\n---\n\n".join(lines)
+
+        system_prompt = (
+            "You are an intelligent security assistant for CrowdLens, an AI-powered crowd monitoring system. "
+            "You help operators understand and analyse surveillance alert data. "
+            "Be concise, professional, and factual. "
+            "If you reference track IDs, quote them with #. "
+        )
+        if history_text:
+            system_prompt += f"\n\nCurrent alert history ({len(req.alert_history)} events):\n\n{history_text}"
+        else:
+            system_prompt += "\n\nNo alert history is available yet."
+
+        loop = asyncio.get_event_loop()
+        # Bridge the blocking generator to async via a queue. Sentinel marks
+        # end-of-stream; the JSON {error: ...} marker is used for failures
+        # so the SSE consumer can show a friendly message.
+        chunk_q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        SENTINEL_DONE = object()
+
+        def _producer():
+            try:
+                for chunk in _gemini_chat_stream(system_prompt, req.messages, 2048):
+                    if not chunk:
+                        continue
+                    asyncio.run_coroutine_threadsafe(chunk_q.put(chunk), loop).result()
+            except Exception as err:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        chunk_q.put({"__error__": str(err)}), loop
+                    ).result()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        chunk_q.put(SENTINEL_DONE), loop
+                    ).result()
+                except Exception:
+                    pass
+
+        loop.run_in_executor(None, _producer)
+
         try:
-            history_text = ""
-            if req.alert_history:
-                lines = [_format_alert_for_ai(a) for a in req.alert_history[:50]]
-                history_text = "\n\n---\n\n".join(lines)
-
-            system_prompt = (
-                "You are an intelligent security assistant for CrowdLens, an AI-powered crowd monitoring system. "
-                "You help operators understand and analyse surveillance alert data. "
-                "Be concise, professional, and factual. "
-                "If you reference track IDs, quote them with #. "
-            )
-            if history_text:
-                system_prompt += f"\n\nCurrent alert history ({len(req.alert_history)} events):\n\n{history_text}"
-            else:
-                system_prompt += "\n\nNo alert history is available yet."
-
-            loop = asyncio.get_event_loop()
-            text = await loop.run_in_executor(
-                None, lambda: _gemini_chat(system_prompt, req.messages, 2048)
-            )
-            yield f"data: {json.dumps({'content': text})}\n\n"
+            while True:
+                item = await chunk_q.get()
+                if item is SENTINEL_DONE:
+                    break
+                if isinstance(item, dict) and "__error__" in item:
+                    yield f"data: {json.dumps({'error': 'AI service error. Please try again.'})}\n\n"
+                    break
+                # Forward the text fragment to the client. Frontend already
+                # appends payload.content to the assistant message, so each
+                # chunk lands as it arrives — true streaming.
+                yield f"data: {json.dumps({'content': item})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
-        except Exception as e:
+        except Exception:
             yield f"data: {json.dumps({'error': 'AI service error. Please try again.'})}\n\n"
 
     return StreamingResponse(
