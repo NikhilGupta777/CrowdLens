@@ -1,5 +1,5 @@
 import { Anomaly } from "../hooks/useSimulation";
-import { Zap, AlertCircle, Users, ShieldAlert, PersonStanding, Clock, Package } from "lucide-react";
+import { Zap, AlertCircle, Users, ShieldAlert, PersonStanding, Clock, Package, HardHat, ScanFace, Car } from "lucide-react";
 
 const ANOMALY_META: Record<string, {
   color: string;
@@ -19,6 +19,9 @@ const ANOMALY_META: Record<string, {
   fall_detected:    { color: "#dc2626", bg: "rgba(220,38,38,0.10)",   Icon: PersonStanding, label: "Fall Detected",   severity: "CRITICAL" },
   restricted_zone:  { color: "#eab308", bg: "rgba(234,179,8,0.10)",   Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH"     },
   loitering:        { color: "#6366f1", bg: "rgba(99,102,241,0.08)",  Icon: Clock,       label: "Loitering",          severity: "MEDIUM"   },
+  ppe_violation:    { color: "#f59e0b", bg: "rgba(245,158,11,0.08)", Icon: HardHat,     label: "PPE Violation",      severity: "HIGH"     },
+  face_detected:    { color: "#06b6d4", bg: "rgba(6,182,212,0.08)",  Icon: ScanFace,    label: "Face Detected",      severity: "INFO"     },
+  lpr_detected:     { color: "#84cc16", bg: "rgba(132,204,22,0.08)", Icon: Car,         label: "License Plate",      severity: "INFO"     },
 };
 
 interface Props {

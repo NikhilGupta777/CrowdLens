@@ -21,6 +21,7 @@ export interface AlertRecord {
     zone_name?: string;
     note?: string;
     class_name?: string;
+    ppe_label?: string;
     bbox?: [number, number, number, number];
     position: [number, number] | null;
   };

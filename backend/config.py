@@ -148,6 +148,20 @@ FIGHT_RESET_GRACE_TIME = 0.4
 # Set to 0 to disable escalation entirely.
 ALERT_ESCALATION_SECS = 60.0
 
+# ── PPE Detection (hard-hat / no-hard-hat) ──────────────────────────────────
+PPE_DETECTION_ENABLED = True
+PPE_CONFIDENCE_THRESHOLD = 0.40
+PPE_ALERT_COOLDOWN_SECS = 10.0
+
+# ── Face Detection (Haar cascade) ───────────────────────────────────────────
+FACE_DETECTION_ENABLED = True
+FACE_SCALE_FACTOR = 1.3
+FACE_MIN_NEIGHBORS = 5
+
+# ── License Plate Detection ──────────────────────────────────────────────────
+LPR_DETECTION_ENABLED = True
+LPR_CONFIDENCE_THRESHOLD = 0.40
+
 # ── Loitering detection ──────────────────────────────────────────────────────
 # A loiterer remains within a small region for an extended time. The radius
 # defines that region. Re-anchoring uses hysteresis (1.5× radius) so jitter

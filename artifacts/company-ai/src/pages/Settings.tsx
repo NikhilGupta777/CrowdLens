@@ -60,6 +60,14 @@ interface Config {
   loitering_time_threshold: number;
   loitering_radius_px: number;
   alert_escalation_secs: number;
+  // Phase 5 — PPE / Face / LPR
+  ppe_detection_enabled: boolean;
+  ppe_confidence_threshold: number;
+  face_detection_enabled: boolean;
+  face_scale_factor: number;
+  face_min_neighbors: number;
+  lpr_detection_enabled: boolean;
+  lpr_confidence_threshold: number;
 }
 
 // Defaults match backend/config.py exactly. Mismatches previously caused the
@@ -95,6 +103,14 @@ const DEFAULT_CONFIG: Config = {
   loitering_time_threshold: 15,
   loitering_radius_px: 180,
   alert_escalation_secs: 60,
+  // Phase 5 — PPE / Face / LPR
+  ppe_detection_enabled: true,
+  ppe_confidence_threshold: 0.40,
+  face_detection_enabled: true,
+  face_scale_factor: 1.3,
+  face_min_neighbors: 5,
+  lpr_detection_enabled: true,
+  lpr_confidence_threshold: 0.40,
 };
 
 const COCO_CLASSES = [
@@ -1832,6 +1848,117 @@ export default function Settings() {
           onChange={(v) => { markUserEdit(); setConfig((c) => ({ ...c, alert_escalation_secs: v })); }}
           unit=" s"
         />
+      </div>
+
+      {/* ── PPE / Face / License Plate Detection ───────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 20, marginBottom: 20 }}>
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            PPE DETECTION
+          </div>
+
+          <ToggleCard
+            label="PPE (Hard-Hat) Detection"
+            description="Detect missing hard-hats using a lightweight YOLO model. Triggers 'PPE Violation' alerts."
+            enabled={config.ppe_detection_enabled}
+            onToggle={(next) => setConfig((c) => ({ ...c, ppe_detection_enabled: next }))}
+          />
+
+          <PremiumSlider
+            label="PPE Confidence"
+            description="Minimum model confidence to flag a PPE violation."
+            icon={ShieldAlert}
+            color="#f59e0b"
+            value={config.ppe_confidence_threshold}
+            min={0.1}
+            max={0.95}
+            step={0.05}
+            onChange={(v) => setConfig((c) => ({ ...c, ppe_confidence_threshold: Number(v.toFixed(2)) }))}
+          />
+        </div>
+
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            FACE DETECTION
+          </div>
+
+          <ToggleCard
+            label="Face Detection (Haar Cascade)"
+            description="Detect faces using OpenCV's built-in Haar cascade. No download required."
+            enabled={config.face_detection_enabled}
+            onToggle={(next) => setConfig((c) => ({ ...c, face_detection_enabled: next }))}
+          />
+
+          <PremiumSlider
+            label="Scale Factor"
+            description="Image scale reduction at each cascade pass. Lower = more faces found but slower."
+            icon={Users}
+            color="#06b6d4"
+            value={config.face_scale_factor}
+            min={1.05}
+            max={2.0}
+            step={0.05}
+            onChange={(v) => setConfig((c) => ({ ...c, face_scale_factor: Number(v.toFixed(2)) }))}
+          />
+
+          <PremiumSlider
+            label="Min Neighbors"
+            description="Higher = fewer false positives. Lower = more detections."
+            icon={Users}
+            color="#06b6d4"
+            value={config.face_min_neighbors}
+            min={1}
+            max={15}
+            step={1}
+            onChange={(v) => setConfig((c) => ({ ...c, face_min_neighbors: v }))}
+          />
+        </div>
+
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            LICENSE PLATE DETECTION
+          </div>
+
+          <ToggleCard
+            label="License Plate Detection"
+            description="Detect vehicle license plates using a lightweight YOLO model. No OCR — bbox only."
+            enabled={config.lpr_detection_enabled}
+            onToggle={(next) => setConfig((c) => ({ ...c, lpr_detection_enabled: next }))}
+          />
+
+          <PremiumSlider
+            label="LPR Confidence"
+            description="Minimum model confidence to flag a plate detection."
+            icon={ShieldAlert}
+            color="#84cc16"
+            value={config.lpr_confidence_threshold}
+            min={0.1}
+            max={0.95}
+            step={0.05}
+            onChange={(v) => setConfig((c) => ({ ...c, lpr_confidence_threshold: Number(v.toFixed(2)) }))}
+          />
+        </div>
       </div>
 
       <div
