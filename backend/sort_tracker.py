@@ -9,6 +9,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
 
+import backend.config as _cfg
+
 try:
     from backend.config import UNATTENDED_CLASSES
 except Exception:
@@ -16,11 +18,28 @@ except Exception:
 
 BAGGAGE_TRACK_CLASSES = set(UNATTENDED_CLASSES)
 OBJECT_TRACK_CLASSES = BAGGAGE_TRACK_CLASSES | {2}
-OBJECT_TRACK_HOLD_FRAMES = 30
-BAGGAGE_STRONG_HOLD_FRAMES = 120
-BAGGAGE_WEAK_HOLD_FRAMES = 45
-BAGGAGE_STRONG_CONFIDENCE = 0.20
-OBJECT_ASSOCIATION_DISTANCE_PX = 95.0
+
+
+def _object_track_hold_frames() -> int:
+    """Frames a non-baggage object track is held after detection is lost.
+    Read dynamically so /api/config can tune this without a restart."""
+    return int(getattr(_cfg, "OBJECT_TRACK_HOLD_FRAMES", 30))
+
+
+def _baggage_strong_hold_frames() -> int:
+    return int(getattr(_cfg, "BAGGAGE_STRONG_HOLD_FRAMES", 120))
+
+
+def _baggage_weak_hold_frames() -> int:
+    return int(getattr(_cfg, "BAGGAGE_WEAK_HOLD_FRAMES", 45))
+
+
+def _baggage_strong_confidence() -> float:
+    return float(getattr(_cfg, "BAGGAGE_STRONG_CONFIDENCE", 0.20))
+
+
+def _object_association_distance_px() -> float:
+    return float(getattr(_cfg, "OBJECT_ASSOCIATION_DISTANCE_PX", 95.0))
 
 # Module-level ID counter with a lock so multiple Sort instances
 # (video, webcam, stream) each get globally unique track IDs and
@@ -86,7 +105,7 @@ def _object_association_cost(det_box, pred_box):
     # without allowing far-away objects to merge.
     det_diag = np.sqrt(_box_area(det_box))
     pred_diag = np.sqrt(_box_area(pred_box))
-    max_dist = max(OBJECT_ASSOCIATION_DISTANCE_PX, 1.5 * det_diag, 1.5 * pred_diag)
+    max_dist = max(_object_association_distance_px(), 1.5 * det_diag, 1.5 * pred_diag)
     dist = _center_distance(det_box, pred_box)
     if dist <= max_dist:
         return min(0.70, (dist / max_dist) * 0.70)
@@ -271,13 +290,17 @@ class Sort:
             confirmed_now = (
                 trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits
             )
+            strong_hold = _baggage_strong_hold_frames()
+            weak_hold = _baggage_weak_hold_frames()
+            obj_hold = _object_track_hold_frames()
+            strong_conf = _baggage_strong_confidence()
             hold_limit = (
-                BAGGAGE_STRONG_HOLD_FRAMES
+                strong_hold
                 if trk.class_id in BAGGAGE_TRACK_CLASSES
-                and trk.confidence >= BAGGAGE_STRONG_CONFIDENCE
-                else BAGGAGE_WEAK_HOLD_FRAMES
+                and trk.confidence >= strong_conf
+                else weak_hold
                 if trk.class_id in BAGGAGE_TRACK_CLASSES
-                else OBJECT_TRACK_HOLD_FRAMES
+                else obj_hold
                 if trk.class_id in OBJECT_TRACK_CLASSES
                 else 0
             )
@@ -312,11 +335,11 @@ class Sort:
         # Prune dead trackers — respect extended hold for object/baggage tracks.
         def _prune_limit(trk):
             if trk.class_id in BAGGAGE_TRACK_CLASSES:
-                if trk.confidence >= BAGGAGE_STRONG_CONFIDENCE:
-                    return BAGGAGE_STRONG_HOLD_FRAMES
-                return BAGGAGE_WEAK_HOLD_FRAMES
+                if trk.confidence >= _baggage_strong_confidence():
+                    return _baggage_strong_hold_frames()
+                return _baggage_weak_hold_frames()
             if trk.class_id in OBJECT_TRACK_CLASSES:
-                return OBJECT_TRACK_HOLD_FRAMES
+                return _object_track_hold_frames()
             return self.max_age
 
         self.trackers = [t for t in self.trackers if t.time_since_update <= _prune_limit(t)]

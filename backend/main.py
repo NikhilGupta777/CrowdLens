@@ -109,6 +109,20 @@ current_config = {
     "loitering_enabled": LOITERING_ENABLED,
     "loitering_time_threshold": LOITERING_TIME_THRESHOLD,
     "loitering_radius_px": LOITERING_RADIUS_PX,
+    # ── Tracker tuning (Phase B) ─────────────────────────────────────────────
+    # Surfaced via /api/config so they can be tweaked without a restart.
+    # Keys are lowercase versions of the actual cfg attribute name so
+    # _apply_config's k.upper() round-trips correctly.
+    "max_age": MAX_AGE,                          # cfg.MAX_AGE
+    "iou_threshold": IOU_THRESHOLD,              # cfg.IOU_THRESHOLD
+    "tracker_min_hits": TRACKER_MIN_HITS,        # cfg.TRACKER_MIN_HITS
+    "object_track_hold_frames": 30,
+    "baggage_strong_hold_frames": 120,
+    "baggage_weak_hold_frames": 45,
+    "baggage_strong_confidence": 0.20,
+    "object_association_distance_px": 95.0,
+    "fall_alert_hold_time": 3.0,
+    "db_alert_retention": 5000,
 }
 
 # Allowlist of cfg attribute names that _apply_config is permitted to write.
@@ -133,6 +147,14 @@ _CONFIG_ALLOWED_ATTRS = frozenset(
         "BAGGAGE_CONFIDENCE_FLOOR",
         "LOITERING_REANCHOR_FACTOR",
         "FIGHT_RESET_GRACE_TIME",
+        # Phase B — tracker tuning + retention
+        "OBJECT_TRACK_HOLD_FRAMES",
+        "BAGGAGE_STRONG_HOLD_FRAMES",
+        "BAGGAGE_WEAK_HOLD_FRAMES",
+        "BAGGAGE_STRONG_CONFIDENCE",
+        "OBJECT_ASSOCIATION_DISTANCE_PX",
+        "FALL_ALERT_HOLD_TIME",
+        "DB_ALERT_RETENTION",
     ]
 )
 
@@ -622,6 +644,22 @@ def _release_gpu_memory() -> None:
         pass
 
 
+def _build_tracker():
+    """Construct a Sort instance using live current_config values.
+
+    Centralised so the 5 mode-specific processing loops all pick up runtime
+    config changes (PUT /api/config) without each loop re-reading the same
+    config keys. The Sort instance is per-session: it captures these at
+    construction, so changes only take effect at the next start.
+    """
+    from backend.sort_tracker import Sort
+    return Sort(
+        max_age=int(current_config.get("max_age", MAX_AGE)),
+        min_hits=int(current_config.get("tracker_min_hits", TRACKER_MIN_HITS)),
+        iou_threshold=float(current_config.get("iou_threshold", IOU_THRESHOLD)),
+    )
+
+
 async def _broadcast(message: str):
     dead = []
     for ws in connected_clients:
@@ -634,7 +672,7 @@ async def _broadcast(message: str):
 
 
 async def _cancel_active():
-    global _active_task
+    global _active_task, _latest_frame_for_snapshot
     task = _active_task
     _active_task = None
     if task and not task.done():
@@ -645,6 +683,11 @@ async def _cancel_active():
             pass
         except Exception:
             pass
+    # Clear the snapshot frame buffer when the active loop is cancelled so
+    # /api/archive/capture cannot return a stale frame from a previous mode
+    # (could be hours old after the user goes idle and comes back).
+    with _snapshot_frame_lock:
+        _latest_frame_for_snapshot = None
     # Free CUDA cached memory between mode switches so long sessions do not
     # accumulate VRAM that PyTorch's allocator would otherwise hold for reuse.
     _release_gpu_memory()
@@ -754,9 +797,7 @@ async def video_processing_loop():
 
     try:
         detector = YOLOv8Detector()
-        tracker = Sort(
-            max_age=MAX_AGE, min_hits=TRACKER_MIN_HITS, iou_threshold=IOU_THRESHOLD
-        )
+        tracker = _build_tracker()
         anomaly_detector = AnomalyDetector()
     except Exception as e:
         video_status["error"] = f"Detector init failed: {e}"
@@ -905,9 +946,7 @@ async def stream_processing_loop(url: str):
 
     try:
         detector = YOLOv8Detector()
-        tracker = Sort(
-            max_age=MAX_AGE, min_hits=TRACKER_MIN_HITS, iou_threshold=IOU_THRESHOLD
-        )
+        tracker = _build_tracker()
         anomaly_detector = AnomalyDetector()
     except Exception as e:
         stream_status["error"] = f"Detector init failed: {e}"
@@ -1154,11 +1193,7 @@ async def stream_processing_loop(url: str):
                         print(
                             f"[stream] Download fallback ready: {downloaded_file_path}"
                         )
-                        tracker = Sort(
-                            max_age=MAX_AGE,
-                            min_hits=TRACKER_MIN_HITS,
-                            iou_threshold=IOU_THRESHOLD,
-                        )
+                        tracker = _build_tracker()
                         anomaly_detector = AnomalyDetector()
                         frames_processed = 0
                         proc = await loop.run_in_executor(None, _start_proc)
@@ -1229,11 +1264,7 @@ async def stream_processing_loop(url: str):
 
                 # Had frames and source ended (e.g. finite HTTP MP4) -> loop automatically.
                 print(f"[stream] Video ended after {frames_processed} frames; looping")
-                tracker = Sort(
-                    max_age=MAX_AGE,
-                    min_hits=TRACKER_MIN_HITS,
-                    iou_threshold=IOU_THRESHOLD,
-                )
+                tracker = _build_tracker()
                 anomaly_detector = AnomalyDetector()
                 frames_processed = 0
                 proc = await loop.run_in_executor(None, _start_proc)
@@ -1319,9 +1350,7 @@ async def webcam_processing_loop():
 
     try:
         detector = YOLOv8Detector()
-        tracker = Sort(
-            max_age=MAX_AGE, min_hits=TRACKER_MIN_HITS, iou_threshold=IOU_THRESHOLD
-        )
+        tracker = _build_tracker()
         anomaly_detector = AnomalyDetector()
     except Exception as e:
         webcam_status["error"] = f"Detector init failed: {e}"
@@ -1514,12 +1543,32 @@ def send_notify_test(force: bool = False):
 
 @app.post("/api/alerts/clear")
 async def clear_alert_history():
-    global _alert_id_counter
+    """Clear in-memory alert deque, SQLite alerts table, AND archive snapshots.
+
+    Previously this only cleared the deque and DB; the frontend separately
+    called /api/archive/clear in parallel. Anyone hitting /api/alerts/clear
+    via curl orphaned the JPGs on disk. _alert_id_counter is intentionally
+    NOT reset to 0 — the SQLite AUTOINCREMENT id keeps growing forever, so
+    re-using small alert_id values risks collisions on the next insert.
+    """
     cleared = len(alert_history)
     alert_history.clear()
-    _alert_id_counter = 0
     await _db.clear_alerts()
-    return {"success": True, "cleared": cleared}
+    # Also clear archive JPGs so /api/alerts/clear has a single, consistent
+    # post-condition: the DB, the deque, AND the on-disk evidence are gone.
+    archive_removed = 0
+    try:
+        for fn in os.listdir(_archive_dir):
+            p = os.path.join(_archive_dir, fn)
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+                    archive_removed += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {"success": True, "cleared": cleared, "archive_removed": archive_removed}
 
 
 @app.get("/api/archive")
@@ -1531,8 +1580,18 @@ def get_archive(limit: int = 200):
 
 @app.post("/api/archive/capture")
 def capture_archive_snapshot():
-    """Capture a manual evidence snapshot from the latest processed frame."""
+    """Capture a manual evidence snapshot from the latest processed frame.
+
+    Refuses to fire when no detection mode is active. Without this guard,
+    clicking Snapshot after stopping a session previously returned the last
+    frame from the prior session (could be hours old) — operators briefly
+    saw historical footage tagged with the current timestamp, which is a
+    forensic-evidence problem.
+    """
     global _alert_id_counter
+
+    if _processing_mode == "idle":
+        raise HTTPException(409, "No active detection session — start video / webcam / stream first")
 
     # Take a deterministic copy of the latest frame under lock so the
     # processing loop cannot mutate the buffer while we are saving it.
@@ -1759,6 +1818,7 @@ class ConfigUpdate(BaseModel):
     fall_persistence_time: float | None = None
     fall_model_confidence_threshold: float | None = None
     fall_person_iou_min: float | None = None
+    fall_alert_hold_time: float | None = None
     restricted_zone_enabled: bool | None = None
     restricted_zone_min_dwell: float | None = None
     fight_detection_enabled: bool | None = None
@@ -1766,10 +1826,21 @@ class ConfigUpdate(BaseModel):
     fight_min_pair_speed: float | None = None
     fight_persistence_time: float | None = None
     fight_min_hit_streak: int | None = None
+    fight_reset_grace_time: float | None = None
     alert_cooldown_secs: float | None = None
     loitering_enabled: bool | None = None
     loitering_time_threshold: float | None = None
     loitering_radius_px: float | None = None
+    # Phase B — tracker tuning
+    max_age: int | None = None
+    iou_threshold: float | None = None
+    tracker_min_hits: int | None = None
+    object_track_hold_frames: int | None = None
+    baggage_strong_hold_frames: int | None = None
+    baggage_weak_hold_frames: int | None = None
+    baggage_strong_confidence: float | None = None
+    object_association_distance_px: float | None = None
+    db_alert_retention: int | None = None
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -1832,6 +1903,30 @@ def update_config(body: ConfigUpdate):
         current_config["loitering_time_threshold"] = _clamp(body.loitering_time_threshold, 3.0, 600.0)
     if body.loitering_radius_px is not None:
         current_config["loitering_radius_px"] = _clamp(body.loitering_radius_px, 30.0, 1500.0)
+    # ── Phase B: tracker tuning + retention ──────────────────────────────
+    if body.fight_reset_grace_time is not None:
+        current_config["fight_reset_grace_time"] = _clamp(body.fight_reset_grace_time, 0.0, 5.0)
+    if body.fall_alert_hold_time is not None:
+        current_config["fall_alert_hold_time"] = _clamp(body.fall_alert_hold_time, 0.5, 30.0)
+    if body.max_age is not None:
+        current_config["max_age"] = int(_clamp(body.max_age, 1, 300))
+    if body.iou_threshold is not None:
+        current_config["iou_threshold"] = _clamp(body.iou_threshold, 0.05, 0.95)
+    if body.tracker_min_hits is not None:
+        current_config["tracker_min_hits"] = int(_clamp(body.tracker_min_hits, 1, 20))
+    if body.object_track_hold_frames is not None:
+        current_config["object_track_hold_frames"] = int(_clamp(body.object_track_hold_frames, 1, 600))
+    if body.baggage_strong_hold_frames is not None:
+        current_config["baggage_strong_hold_frames"] = int(_clamp(body.baggage_strong_hold_frames, 1, 1200))
+    if body.baggage_weak_hold_frames is not None:
+        current_config["baggage_weak_hold_frames"] = int(_clamp(body.baggage_weak_hold_frames, 1, 600))
+    if body.baggage_strong_confidence is not None:
+        current_config["baggage_strong_confidence"] = _clamp(body.baggage_strong_confidence, 0.05, 0.95)
+    if body.object_association_distance_px is not None:
+        current_config["object_association_distance_px"] = _clamp(body.object_association_distance_px, 5.0, 500.0)
+    if body.db_alert_retention is not None:
+        # 0 disables retention pruning entirely; useful for forensic captures.
+        current_config["db_alert_retention"] = int(_clamp(body.db_alert_retention, 0, 1_000_000))
     _apply_config()
     return current_config
 

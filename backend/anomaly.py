@@ -511,7 +511,9 @@ class AnomalyDetector:
                     anomaly["note"] = "hf_fall_model_confirmed"
                 anomalies.append(anomaly)
                 emitted_keys.add(candidate_key)
-                self.fall_active_until[candidate_key] = current_time + 3.0
+                self.fall_active_until[candidate_key] = current_time + float(
+                    getattr(_cfg, "FALL_ALERT_HOLD_TIME", 3.0)
+                )
                 active_payload = {
                     "position": [cx, cy],
                     "bbox": [int(fx1), int(fy1), int(fx2), int(fy2)],
