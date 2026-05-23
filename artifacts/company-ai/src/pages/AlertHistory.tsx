@@ -80,6 +80,7 @@ function exportCSV(alerts: AlertRecord[]) {
     "Track ID",
     "Track Pair",
     "Count",
+    "Density (ppl/kpx²)",
     "Speed (px/s)",
     "Pair Speed (px/s)",
     "Pair Distance (px)",
@@ -102,6 +103,7 @@ function exportCSV(alerts: AlertRecord[]) {
       escapeCsvValue(record.anomaly.track_id),
       escapeCsvValue(record.anomaly.track_ids ? record.anomaly.track_ids.join("-") : ""),
       escapeCsvValue(record.anomaly.count),
+      escapeCsvValue(record.anomaly.density_per_kpx2),
       escapeCsvValue(record.anomaly.avg_speed),
       escapeCsvValue(record.anomaly.avg_pair_speed),
       escapeCsvValue(record.anomaly.distance),
@@ -178,6 +180,9 @@ function renderDetails(record: AlertRecord): string {
     parts.push(`Pair #${record.anomaly.track_ids[0]} & #${record.anomaly.track_ids[1]}`);
   }
   if (record.anomaly.count !== undefined) parts.push(`${record.anomaly.count} people`);
+  if (record.anomaly.density_per_kpx2 !== undefined && record.anomaly.type === "overcrowding") {
+    parts.push(`density ${record.anomaly.density_per_kpx2.toFixed(2)} ppl/kpx²`);
+  }
   if (record.anomaly.avg_speed !== undefined) parts.push(`${record.anomaly.avg_speed} px/s`);
   if (record.anomaly.avg_pair_speed !== undefined) parts.push(`${record.anomaly.avg_pair_speed} pair px/s`);
   if (record.anomaly.distance !== undefined) parts.push(`${record.anomaly.distance}px apart`);

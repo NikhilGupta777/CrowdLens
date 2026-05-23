@@ -99,13 +99,36 @@ def _center_distance(box_a: list[float], box_b: list[float]) -> float:
 
 
 def _same_baggage_object(box_a: list[float], box_b: list[float]) -> bool:
-    if _iou(box_a, box_b) >= 0.35:
+    """Decide whether two baggage detections refer to the same physical object.
+
+    YOLO COCO frequently labels the same bag with multiple sibling classes
+    (backpack/handbag/suitcase) and the boxes drift between frames, so a
+    pure IoU check is too tight.  The center-distance fallback exists to
+    catch *partial* overlap on small bags where IoU is unreliable.
+
+    Edge case fixed in this revision: two physically distinct small bags
+    sitting side-by-side could previously satisfy the center-distance
+    fallback (their centres are within ``max(35, 0.5·max_diag)``) without
+    actually overlapping, and would silently merge into a single
+    detection.  Adding a minimum-IoU gate to the fallback path eliminates
+    that — boxes must still touch to be considered the same object.
+    """
+    iou = _iou(box_a, box_b)
+    # Strong overlap: clearly the same object regardless of size.
+    if iou >= 0.35:
         return True
-    # Only use center-distance fallback for genuinely small bags where IoU is
-    # unreliable. This prevents merging two separate bags sitting side by side.
+
+    # Limit the fallback to small boxes where the YOLO bbox is most jittery.
     smaller_area = min(_box_area(box_a), _box_area(box_b))
     if smaller_area > 4000:  # ~63x63 px — not a tiny bag
         return False
+
+    # Require *some* overlap before the proximity fallback engages. Without
+    # this, two disjoint small bags sitting side by side merge into one;
+    # with it, the boxes must still actually touch.
+    if iou < 0.10:
+        return False
+
     max_diag = max(np.sqrt(_box_area(box_a)), np.sqrt(_box_area(box_b)))
     return _center_distance(box_a, box_b) <= max(35.0, 0.50 * max_diag)
 
