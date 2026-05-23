@@ -50,7 +50,8 @@ def _init_db_sync():
             source      TEXT    NOT NULL DEFAULT '',
             snapshot_url TEXT,
             acked       INTEGER NOT NULL DEFAULT 0,
-            acked_at    REAL
+            acked_at    REAL,
+            escalated   INTEGER NOT NULL DEFAULT 0
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC)")
@@ -78,6 +79,13 @@ def _init_db_sync():
             conn.execute("ALTER TABLE alerts ADD COLUMN acked_at REAL")
         except sqlite3.OperationalError as e:
             print(f"[database] ALTER TABLE add acked_at skipped: {e}")
+    # Forward-migration: add escalated for DBs created before the escalation
+    # flag was persisted (previously the mark-escalated UPDATE was a no-op).
+    if "escalated" not in cols:
+        try:
+            conn.execute("ALTER TABLE alerts ADD COLUMN escalated INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as e:
+            print(f"[database] ALTER TABLE add escalated skipped: {e}")
 
     conn.commit()
 
@@ -87,8 +95,8 @@ def _insert_alert_sync(entry: dict):
         conn = _get_conn()
         conn.execute(
             """
-            INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url, acked, acked_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url, acked, acked_at, escalated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry["id"],
@@ -99,6 +107,7 @@ def _insert_alert_sync(entry: dict):
                 entry.get("snapshot_url"),
                 int(entry.get("acked", 0)),
                 entry.get("acked_at"),
+                int(entry.get("escalated", 0)),
             ),
         )
         # Bound DB size on a long-running single-user session. Without this,
@@ -133,6 +142,7 @@ def _load_alerts_sync(limit: int = 500) -> list[dict]:
     ).fetchall()
     results = []
     for row in rows:
+        keys = row.keys()
         results.append({
             "id": row["alert_id"],
             "anomaly": json.loads(row["anomaly"]),
@@ -142,6 +152,7 @@ def _load_alerts_sync(limit: int = 500) -> list[dict]:
             "snapshot_url": row["snapshot_url"],
             "acked": int(row["acked"]) if row["acked"] is not None else 0,
             "acked_at": row["acked_at"],
+            "escalated": bool(row["escalated"]) if "escalated" in keys and row["escalated"] is not None else False,
         })
     return results
 
@@ -202,7 +213,8 @@ def load_into_deque(dq: deque):
     """Synchronously populate an existing deque from the DB (called at startup)."""
     rows = _load_alerts_sync(dq.maxlen or 500)
     for row in reversed(rows):
-        # Stamp escalated=False on load; the escalation loop re-flags
-        # any unacked+old entries within its first 10-second tick.
+        # Restore the persisted escalated flag; the escalation loop also
+        # re-flags any still-unacked+old entries within its first 10-second
+        # tick, so this is mainly to preserve history across a restart.
         row.setdefault("escalated", False)
         dq.append(row)

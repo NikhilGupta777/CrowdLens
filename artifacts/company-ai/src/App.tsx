@@ -7,15 +7,18 @@ import Settings from "./pages/Settings";
 import AIPanel from "./pages/AIPanel";
 import { useStickyAnomalies } from "./hooks/useStickyAnomalies";
 
-function getThreatLevel(anomalyCount: number, types: string[]): "secure" | "warning" | "critical" {
-  if (anomalyCount === 0) return "secure";
-  if (
-    types.includes("running")
-    || types.includes("unattended_object")
-    || types.includes("fight_suspected")
-    || types.includes("fall_detected")
-    || types.includes("restricted_zone")
-  ) return "critical";
+// Informational detections (faces, plates) are logged for review but are not
+// threats, so they must not raise the security banner.
+const INFO_ANOMALY_TYPES = ["face_detected", "lpr_detected"];
+const CRITICAL_ANOMALY_TYPES = [
+  "running", "unattended_object", "fight_suspected",
+  "fall_detected", "restricted_zone", "ppe_violation",
+];
+
+function getThreatLevel(types: string[]): "secure" | "warning" | "critical" {
+  const significant = types.filter((t) => !INFO_ANOMALY_TYPES.includes(t));
+  if (significant.length === 0) return "secure";
+  if (significant.some((t) => CRITICAL_ANOMALY_TYPES.includes(t))) return "critical";
   return "warning";
 }
 
@@ -27,7 +30,7 @@ function AppShell() {
   // operator to react; transient events don't pile up in the feed.
   const stickyAnomalies = useStickyAnomalies(frame?.anomalies ?? []);
   const anomalyTypes = stickyAnomalies.map((a) => a.type);
-  const threatLevel = getThreatLevel(stickyAnomalies.length, anomalyTypes);
+  const threatLevel = getThreatLevel(anomalyTypes);
 
   return (
     <Layout connected={connected} threatLevel={threatLevel}>

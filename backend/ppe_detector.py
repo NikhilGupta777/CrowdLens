@@ -7,9 +7,7 @@ detect_ppe(frame) returns a list of dicts:
   [{"bbox": [x1, y1, x2, y2], "label": "Hardhat"|"NO-Hardhat", "confidence": float}]
 """
 
-import os
 import threading
-import time
 
 _model = None
 _model_lock = threading.Lock()
@@ -83,12 +81,17 @@ def detect_ppe(frame, conf_override: float = 0.40) -> list[dict]:
         return []
 
     try:
-        results = _model.predict(
-            source=frame,
-            conf=conf_override,
-            verbose=False,
-            imgsz=640,
-        )
+        # Serialize inference: ultralytics models are not thread-safe, and the
+        # extra detectors run in a shared thread-pool executor where a stale
+        # processing loop could overlap with a newly-started one during a mode
+        # switch. Mirrors the lock in detector.py / fall_detector.py.
+        with _model_lock:
+            results = _model.predict(
+                source=frame,
+                conf=conf_override,
+                verbose=False,
+                imgsz=640,
+            )
 
         detections = []
         for result in results:

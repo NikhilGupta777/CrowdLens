@@ -11,10 +11,8 @@ neighbours that confirmed the face (higher = more reliable).
 """
 
 import os
-import threading
 
 import cv2
-import numpy as np
 
 _cascade = None
 _model_ready = False

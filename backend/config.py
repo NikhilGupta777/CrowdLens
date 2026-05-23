@@ -149,17 +149,19 @@ FIGHT_RESET_GRACE_TIME = 0.4
 ALERT_ESCALATION_SECS = 60.0
 
 # ── PPE Detection (hard-hat / no-hard-hat) ──────────────────────────────────
-PPE_DETECTION_ENABLED = True
+# Off by default: these are opt-in extras (each adds a model inference per
+# frame). Enable from the Settings page when needed.
+PPE_DETECTION_ENABLED = False
 PPE_CONFIDENCE_THRESHOLD = 0.40
 PPE_ALERT_COOLDOWN_SECS = 10.0
 
 # ── Face Detection (Haar cascade) ───────────────────────────────────────────
-FACE_DETECTION_ENABLED = True
+FACE_DETECTION_ENABLED = False
 FACE_SCALE_FACTOR = 1.3
 FACE_MIN_NEIGHBORS = 5
 
 # ── License Plate Detection ──────────────────────────────────────────────────
-LPR_DETECTION_ENABLED = True
+LPR_DETECTION_ENABLED = False
 LPR_CONFIDENCE_THRESHOLD = 0.40
 
 # ── Loitering detection ──────────────────────────────────────────────────────

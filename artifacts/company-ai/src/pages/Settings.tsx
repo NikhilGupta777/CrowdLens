@@ -103,25 +103,25 @@ const DEFAULT_CONFIG: Config = {
   loitering_time_threshold: 15,
   loitering_radius_px: 180,
   alert_escalation_secs: 60,
-  // Phase 5 — PPE / Face / LPR
-  ppe_detection_enabled: true,
+  // Phase 5 — PPE / Face / LPR (opt-in extras, off by default)
+  ppe_detection_enabled: false,
   ppe_confidence_threshold: 0.40,
-  face_detection_enabled: true,
+  face_detection_enabled: false,
   face_scale_factor: 1.3,
   face_min_neighbors: 5,
-  lpr_detection_enabled: true,
+  lpr_detection_enabled: false,
   lpr_confidence_threshold: 0.40,
 };
 
+// Mirrors backend/config.py COCO_CLASSES (the classes actually detected).
+// Bottle/cup/phone/book live in DISABLED_COCO_CLASSES on the backend and are
+// not monitored, so they are intentionally omitted here.
 const COCO_CLASSES = [
   { id: 0, name: "Person", color: "#10b981" },
+  { id: 2, name: "Car", color: "#3b82f6" },
   { id: 24, name: "Backpack", color: "#f59e0b" },
-  { id: 26, name: "Handbag", color: "#f59e0b" },
+  { id: 26, name: "Baggage", color: "#f59e0b" },
   { id: 28, name: "Suitcase", color: "#f59e0b" },
-  { id: 39, name: "Bottle", color: "#f59e0b" },
-  { id: 41, name: "Cup", color: "#f59e0b" },
-  { id: 67, name: "Cell Phone", color: "#f59e0b" },
-  { id: 73, name: "Book", color: "#f59e0b" },
 ];
 
 function PremiumSlider({
