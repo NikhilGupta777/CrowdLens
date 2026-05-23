@@ -67,12 +67,18 @@ from backend.config import (
     MAX_AGE,
     IOU_THRESHOLD,
 )
-from backend.detector import _download_model, is_model_ready, get_model_error
+from backend.detector import (
+    _download_model,
+    is_model_ready,
+    get_model_error,
+    get_loading_progress as _yolo_progress,
+)
 from backend.fall_detector import (
     _download_fall_model,
     detect_falls,
     get_fall_model_error,
     is_fall_model_ready,
+    get_fall_loading_progress as _fall_progress,
 )
 
 # ─── Global State ─────────────────────────────────────────────────────────────
@@ -104,6 +110,30 @@ current_config = {
     "loitering_time_threshold": LOITERING_TIME_THRESHOLD,
     "loitering_radius_px": LOITERING_RADIUS_PX,
 }
+
+# Allowlist of cfg attribute names that _apply_config is permitted to write.
+# Computed once at import time from the current_config keys plus the extra
+# tunables added in the deep audit. Anything not on this list is rejected
+# with a logged warning so typos cannot silently set unused attributes.
+_CONFIG_ALLOWED_ATTRS = frozenset(
+    [k.upper() for k in current_config.keys()] + [
+        "RUNNING_BODY_HEIGHTS_PER_SEC",
+        "RUNNING_PIXEL_FLOOR",
+        "RUNNING_RESET_GRACE_TIME",
+        "RUNNING_MIN_HIT_STREAK",
+        "FALL_MIN_AREA_RATIO",
+        "FALL_ASPECT_RATIO_MIN",
+        "FALL_PERSON_IOU_MIN",
+        "RESTRICTED_ZONE_USE_FEET",
+        "UNATTENDED_BYSTANDER_ATTENDS",
+        "UNATTENDED_GHOST_TTL",
+        "UNATTENDED_GHOST_CELL_PX",
+        "OVERCROWDING_CLUSTER_DISTANCE_PX",
+        "OVERCROWDING_MIN_CLUSTER_SIZE",
+        "BAGGAGE_CONFIDENCE_FLOOR",
+        "LOITERING_REANCHOR_FACTOR",
+    ]
+)
 
 stats_snapshot = {
     "person_count": 0,
@@ -156,7 +186,17 @@ os.makedirs(_archive_dir, exist_ok=True)
 VIDEO_UPLOAD_PATH = os.path.join(tempfile.gettempdir(), "crowdlens_upload.mp4")
 _processing_mode = "idle"
 _active_task: asyncio.Task | None = None
-_video_anomaly_detector = AnomalyDetector()
+# Note: _video_anomaly_detector is intentionally NOT a module-level singleton
+# anymore. video_processing_loop, stream_processing_loop, and
+# webcam_processing_loop each construct their own AnomalyDetector so per-loop
+# state (track history, ghost cache, fall persistence buckets) cannot bleed
+# across modes. Previously a stale stream loop could mutate the same instance
+# the new mode just reset to.
+
+# Lock that protects _latest_frame_for_snapshot from racing reads/writes
+# between the active processing loop (writer) and POST /api/archive/capture
+# (reader). Without this, capture can observe a torn frame mid-copy.
+_snapshot_frame_lock = threading.Lock()
 
 video_status = {
     "mode": "idle",
@@ -244,6 +284,15 @@ def _should_send_email(entry: dict, now: float) -> bool:
             except FileNotFoundError:
                 continue
             if time.time() - lock_started > 3:
+                # Don't drop the email silently — surface the cause via metrics
+                # and a log line so a wedged lock can be diagnosed.
+                _email_metrics["suppressed"] += 1
+                _email_metrics["last_error"] = (
+                    f"email lockfile contention (>3 s waiting on "
+                    f"{_EMAIL_COOLDOWN_LOCK_PATH}); alert "
+                    f"{alert_type}/{source} dropped"
+                )
+                print(f"[notify-email] {_email_metrics['last_error']}")
                 return False
             time.sleep(0.02)
 
@@ -470,8 +519,12 @@ def build_frame_payload(
     frame_for_archive=None,
 ) -> dict:
     global _latest_frame_for_snapshot
-    person_count = sum(1 for t in tracks if t["class_id"] == 0)
-    object_count = sum(1 for t in tracks if t["class_id"] != 0)
+    # Exclude tracks the SORT tracker is "predicting" (held over after the
+    # detection has gone away). Without this filter the PERSONS card would
+    # count up to MAX_AGE = 30 frames worth of phantom people after they
+    # leave the frame, briefly inflating the live occupancy number.
+    person_count = sum(1 for t in tracks if t["class_id"] == 0 and not t.get("predicted"))
+    object_count = sum(1 for t in tracks if t["class_id"] != 0 and not t.get("predicted"))
 
     _frame_times.append(now)
     fps = 0
@@ -503,7 +556,8 @@ def build_frame_payload(
         a for a in serializable_anomalies if _should_record_alert(a, now)
     ]
     if frame_for_archive is not None:
-        _latest_frame_for_snapshot = frame_for_archive.copy()
+        with _snapshot_frame_lock:
+            _latest_frame_for_snapshot = frame_for_archive.copy()
     snapshot_url = None
     if recordable_anomalies and frame_for_archive is not None:
         snapshot_url = _save_archive_snapshot(frame_for_archive, now)
@@ -532,10 +586,39 @@ def build_frame_payload(
 
 
 def _apply_config():
+    """Push current_config values into backend.config module attributes.
+
+    Validates every key against a known allowlist so a typo in current_config
+    or a stray key from a /api/config PUT cannot silently set a nonexistent
+    cfg attribute (which previously did nothing useful but masked real bugs).
+    """
     import backend.config as cfg
 
     for k, v in current_config.items():
-        setattr(cfg, k.upper(), v)
+        attr = k.upper()
+        if attr not in _CONFIG_ALLOWED_ATTRS:
+            print(f"[config] ignoring unknown config key: {k!r}")
+            continue
+        setattr(cfg, attr, v)
+
+
+def _release_gpu_memory() -> None:
+    """Release CUDA cached memory after a processing loop ends.
+
+    Each mode (video / stream / webcam) constructs its own YOLOv8Detector
+    proxy, but the underlying _model and CUDA tensors live in module-level
+    state inside detector.py. Without an explicit cache empty between mode
+    switches, long sessions can creep on VRAM as activations from previous
+    inference passes are held by PyTorch's allocator.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        # Never let GPU cleanup take down the API; missing CUDA, missing
+        # torch in some environments, etc. should all silently no-op.
+        pass
 
 
 async def _broadcast(message: str):
@@ -561,6 +644,9 @@ async def _cancel_active():
             pass
         except Exception:
             pass
+    # Free CUDA cached memory between mode switches so long sessions do not
+    # accumulate VRAM that PyTorch's allocator would otherwise hold for reuse.
+    _release_gpu_memory()
 
 
 def _build_tracks_from_yolo(
@@ -647,7 +733,13 @@ def _encode_preview(frame) -> str:
 
 
 async def video_processing_loop():
-    global _video_anomaly_detector
+    """Process the uploaded video file and broadcast detection frames.
+
+    Owns its own AnomalyDetector instance: the bag ghost cache, per-track
+    history, and fall persistence buckets are loop-scoped so a stop/start
+    cycle gets a clean slate, and a stream loop running concurrently (e.g.
+    in error-recovery scenarios) cannot mutate this loop's state.
+    """
     import cv2
 
     video_status["error"] = None
@@ -664,7 +756,7 @@ async def video_processing_loop():
         tracker = Sort(
             max_age=MAX_AGE, min_hits=TRACKER_MIN_HITS, iou_threshold=IOU_THRESHOLD
         )
-        _video_anomaly_detector = AnomalyDetector()
+        anomaly_detector = AnomalyDetector()
     except Exception as e:
         video_status["error"] = f"Detector init failed: {e}"
         return
@@ -702,7 +794,7 @@ async def video_processing_loop():
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_num = 0
                 tracker.reset()
-                _video_anomaly_detector = AnomalyDetector()
+                anomaly_detector = AnomalyDetector()
                 playback_start = time.time()
                 continue
 
@@ -752,7 +844,7 @@ async def video_processing_loop():
 
             now = time.time()
             tracks = _build_tracks_from_yolo(raw_tracks, INFER_WIDTH, INFER_HEIGHT)
-            anomalies = _video_anomaly_detector.update(
+            anomalies = anomaly_detector.update(
                 tracks,
                 now,
                 fall_detections=fall_detections,
@@ -786,8 +878,11 @@ async def stream_processing_loop(url: str):
     - Handles HTTP MP4 progressive downloads correctly (loops when finished)
     - Works for MJPEG HTTP streams, HLS, and most container formats
     - Gives readable stderr so we can surface a clear error for blocked ports
+
+    Owns its own AnomalyDetector instance for the same isolation reason as
+    video_processing_loop: ghost cache, fall persistence, and track history
+    must not bleed across modes.
     """
-    global _video_anomaly_detector
     import subprocess
     from urllib.parse import urlsplit
     from urllib.request import Request, urlopen
@@ -812,7 +907,7 @@ async def stream_processing_loop(url: str):
         tracker = Sort(
             max_age=MAX_AGE, min_hits=TRACKER_MIN_HITS, iou_threshold=IOU_THRESHOLD
         )
-        _video_anomaly_detector = AnomalyDetector()
+        anomaly_detector = AnomalyDetector()
     except Exception as e:
         stream_status["error"] = f"Detector init failed: {e}"
         stream_status["active"] = False
@@ -1063,7 +1158,7 @@ async def stream_processing_loop(url: str):
                             min_hits=TRACKER_MIN_HITS,
                             iou_threshold=IOU_THRESHOLD,
                         )
-                        _video_anomaly_detector = AnomalyDetector()
+                        anomaly_detector = AnomalyDetector()
                         frames_processed = 0
                         proc = await loop.run_in_executor(None, _start_proc)
                         frame_q, reader_stop, reader_thread, reader_state = (
@@ -1138,7 +1233,7 @@ async def stream_processing_loop(url: str):
                     min_hits=TRACKER_MIN_HITS,
                     iou_threshold=IOU_THRESHOLD,
                 )
-                _video_anomaly_detector = AnomalyDetector()
+                anomaly_detector = AnomalyDetector()
                 frames_processed = 0
                 proc = await loop.run_in_executor(None, _start_proc)
                 frame_q, reader_stop, reader_thread, reader_state = _start_reader(proc)
@@ -1161,7 +1256,7 @@ async def stream_processing_loop(url: str):
 
             now = time.time()
             tracks = _build_tracks_from_yolo(raw_tracks, W, H)
-            anomalies = _video_anomaly_detector.update(
+            anomalies = anomaly_detector.update(
                 tracks,
                 now,
                 fall_detections=fall_detections,
@@ -1201,8 +1296,12 @@ async def stream_processing_loop(url: str):
 
 # â”€â”€â”€ Webcam frame processing loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async def webcam_processing_loop():
-    """Pulls JPEG frames from _cam_frame_queue, runs YOLO+SORT, broadcasts."""
-    global _video_anomaly_detector
+    """Pulls JPEG frames from _cam_frame_queue, runs YOLO+SORT, broadcasts.
+
+    Owns its own AnomalyDetector for the same isolation reason as the video
+    and stream loops: track history, ghost cache, and fall persistence are
+    per-loop state and must not be shared across mode switches.
+    """
     import cv2
 
     webcam_status["error"] = None
@@ -1299,6 +1398,7 @@ async def webcam_processing_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _apply_config()
+    _load_zones_from_disk()
     await _db.init_db()
     _db.load_into_deque(alert_history)
     thread = threading.Thread(target=_download_model, daemon=True)
@@ -1364,7 +1464,12 @@ async def websocket_cam_endpoint(websocket: WebSocket):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "uptime": round(time.time() - _start_time)}
+    return {
+        "status": "ok",
+        "uptime": round(time.time() - _start_time),
+        "model_progress": _yolo_progress(),
+        "fall_model_progress": _fall_progress(),
+    }
 
 
 @app.get("/api/stats")
@@ -1427,11 +1532,17 @@ def get_archive(limit: int = 200):
 def capture_archive_snapshot():
     """Capture a manual evidence snapshot from the latest processed frame."""
     global _alert_id_counter
-    if _latest_frame_for_snapshot is None:
-        raise HTTPException(409, "No processed frame available yet")
+
+    # Take a deterministic copy of the latest frame under lock so the
+    # processing loop cannot mutate the buffer while we are saving it.
+    # Without this lock, fast clicks could observe a torn or stale frame.
+    with _snapshot_frame_lock:
+        if _latest_frame_for_snapshot is None:
+            raise HTTPException(409, "No processed frame available yet")
+        frame_copy = _latest_frame_for_snapshot.copy()
 
     now = time.time()
-    snapshot_url = _save_archive_snapshot(_latest_frame_for_snapshot, now)
+    snapshot_url = _save_archive_snapshot(frame_copy, now)
     if not snapshot_url:
         raise HTTPException(500, "Failed to save snapshot")
 
@@ -1482,23 +1593,171 @@ def clear_archive():
 
 @app.get("/api/config")
 def get_config():
+    import backend.config as cfg
     return {
         **current_config,
-        "restricted_zones": RESTRICTED_ZONES,
+        # Use the live cfg.RESTRICTED_ZONES list so CRUD edits via the zones
+        # endpoints are reflected in /api/config without needing a restart.
+        "restricted_zones": cfg.RESTRICTED_ZONES,
         "frame_width": FRAME_WIDTH,
         "frame_height": FRAME_HEIGHT,
     }
 
 
+# ─── Restricted zones CRUD ────────────────────────────────────────────────────
+
+_ZONES_PATH = os.path.join(os.path.dirname(__file__), "zones.json")
+_zones_lock = threading.Lock()
+_VALID_ZONE_SHAPES = {"rect", "polygon"}
+
+
+class ZoneRequest(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    shape: str | None = None  # "rect" or "polygon"
+    x1: float | None = None
+    y1: float | None = None
+    x2: float | None = None
+    y2: float | None = None
+    points: list | None = None  # for polygon: [[x, y], ...]
+
+
+def _validate_and_normalise_zone(body: ZoneRequest, existing_id: str | None = None) -> dict:
+    """Coerce incoming zone payloads into the canonical dict the detector expects.
+
+    Raises HTTPException with a precise message if the payload is invalid.
+    """
+    shape = (body.shape or "rect").lower()
+    if shape not in _VALID_ZONE_SHAPES:
+        raise HTTPException(400, f"Invalid shape {shape!r}; must be one of {sorted(_VALID_ZONE_SHAPES)}")
+
+    zone: dict = {
+        "id": existing_id or (body.id and str(body.id).strip()) or f"RZ{int(time.time() * 1000) % 100000}",
+        "name": (body.name or "Restricted Zone").strip()[:64],
+        "shape": shape,
+    }
+
+    if shape == "rect":
+        if None in (body.x1, body.y1, body.x2, body.y2):
+            raise HTTPException(400, "Rectangle zones require x1, y1, x2, y2")
+        x1, y1, x2, y2 = float(body.x1), float(body.y1), float(body.x2), float(body.y2)
+        # Normalise so x2 > x1 and y2 > y1 — the detector assumes it.
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        # Clamp to canonical canvas bounds; we draw / detect against
+        # FRAME_WIDTH x FRAME_HEIGHT.
+        x1 = max(0.0, min(float(FRAME_WIDTH), x1))
+        x2 = max(0.0, min(float(FRAME_WIDTH), x2))
+        y1 = max(0.0, min(float(FRAME_HEIGHT), y1))
+        y2 = max(0.0, min(float(FRAME_HEIGHT), y2))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            raise HTTPException(400, "Rectangle zone must be at least 4×4 pixels")
+        zone.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    else:  # polygon
+        pts = body.points or []
+        if not isinstance(pts, list) or len(pts) < 3:
+            raise HTTPException(400, "Polygon zones require at least 3 points")
+        clean: list[list[float]] = []
+        for p in pts:
+            if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+                raise HTTPException(400, f"Invalid polygon point: {p!r}")
+            px = max(0.0, min(float(FRAME_WIDTH), float(p[0])))
+            py = max(0.0, min(float(FRAME_HEIGHT), float(p[1])))
+            clean.append([px, py])
+        zone["points"] = clean
+
+    return zone
+
+
+def _save_zones_to_disk() -> None:
+    import backend.config as cfg
+    try:
+        with _zones_lock:
+            data = list(cfg.RESTRICTED_ZONES)
+        with open(_ZONES_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[zones] Failed to save zones to {_ZONES_PATH}: {e}")
+
+
+def _load_zones_from_disk() -> None:
+    """Load persisted zones at startup, replacing the seed RESTRICTED_ZONES."""
+    import backend.config as cfg
+    if not os.path.exists(_ZONES_PATH):
+        return
+    try:
+        with open(_ZONES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            with _zones_lock:
+                cfg.RESTRICTED_ZONES.clear()
+                cfg.RESTRICTED_ZONES.extend([z for z in data if isinstance(z, dict) and z.get("id")])
+            print(f"[zones] Loaded {len(cfg.RESTRICTED_ZONES)} zone(s) from {_ZONES_PATH}")
+    except Exception as e:
+        print(f"[zones] Failed to load zones from {_ZONES_PATH}: {e}")
+
+
+@app.get("/api/zones")
+def list_zones():
+    import backend.config as cfg
+    return {"zones": list(cfg.RESTRICTED_ZONES)}
+
+
+@app.post("/api/zones")
+def create_zone(body: ZoneRequest):
+    import backend.config as cfg
+    zone = _validate_and_normalise_zone(body)
+    with _zones_lock:
+        if any(z.get("id") == zone["id"] for z in cfg.RESTRICTED_ZONES):
+            raise HTTPException(409, f"Zone id {zone['id']!r} already exists")
+        cfg.RESTRICTED_ZONES.append(zone)
+    _save_zones_to_disk()
+    return {"zone": zone}
+
+
+@app.put("/api/zones/{zone_id}")
+def update_zone(zone_id: str, body: ZoneRequest):
+    import backend.config as cfg
+    zone = _validate_and_normalise_zone(body, existing_id=zone_id)
+    with _zones_lock:
+        for i, existing in enumerate(cfg.RESTRICTED_ZONES):
+            if existing.get("id") == zone_id:
+                cfg.RESTRICTED_ZONES[i] = zone
+                _save_zones_to_disk()
+                return {"zone": zone}
+    raise HTTPException(404, f"Zone {zone_id!r} not found")
+
+
+@app.delete("/api/zones/{zone_id}")
+def delete_zone(zone_id: str):
+    import backend.config as cfg
+    with _zones_lock:
+        before = len(cfg.RESTRICTED_ZONES)
+        cfg.RESTRICTED_ZONES[:] = [
+            z for z in cfg.RESTRICTED_ZONES if z.get("id") != zone_id
+        ]
+        if len(cfg.RESTRICTED_ZONES) == before:
+            raise HTTPException(404, f"Zone {zone_id!r} not found")
+    _save_zones_to_disk()
+    return {"success": True, "id": zone_id}
+
+
 class ConfigUpdate(BaseModel):
     overcrowding_threshold: int | None = None
     running_speed_threshold: float | None = None
+    running_body_heights_per_sec: float | None = None
+    running_pixel_floor: float | None = None
     unattended_object_time: float | None = None
     stationary_threshold: float | None = None
     unattended_owner_proximity_px: float | None = None
     unattended_owner_grace_time: float | None = None
+    unattended_bystander_attends: bool | None = None
+    unattended_ghost_ttl: float | None = None
+    overcrowding_cluster_distance_px: float | None = None
+    overcrowding_min_cluster_size: int | None = None
     fall_persistence_time: float | None = None
     fall_model_confidence_threshold: float | None = None
+    fall_person_iou_min: float | None = None
     restricted_zone_enabled: bool | None = None
     restricted_zone_min_dwell: float | None = None
     fight_detection_enabled: bool | None = None
@@ -1512,54 +1771,66 @@ class ConfigUpdate(BaseModel):
     loitering_radius_px: float | None = None
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+
 @app.put("/api/config")
 def update_config(body: ConfigUpdate):
     global _ALERT_COOLDOWN_SECS
     if body.overcrowding_threshold is not None:
-        current_config["overcrowding_threshold"] = body.overcrowding_threshold
+        current_config["overcrowding_threshold"] = int(_clamp(body.overcrowding_threshold, 1, 200))
     if body.running_speed_threshold is not None:
-        current_config["running_speed_threshold"] = body.running_speed_threshold
+        current_config["running_speed_threshold"] = _clamp(body.running_speed_threshold, 30.0, 1500.0)
+    if body.running_body_heights_per_sec is not None:
+        current_config["running_body_heights_per_sec"] = _clamp(body.running_body_heights_per_sec, 0.4, 6.0)
+    if body.running_pixel_floor is not None:
+        current_config["running_pixel_floor"] = _clamp(body.running_pixel_floor, 0.0, 500.0)
     if body.unattended_object_time is not None:
-        current_config["unattended_object_time"] = body.unattended_object_time
+        current_config["unattended_object_time"] = _clamp(body.unattended_object_time, 1.0, 600.0)
     if body.stationary_threshold is not None:
-        current_config["stationary_threshold"] = body.stationary_threshold
+        current_config["stationary_threshold"] = _clamp(body.stationary_threshold, 5.0, 1000.0)
     if body.unattended_owner_proximity_px is not None:
-        current_config["unattended_owner_proximity_px"] = (
-            body.unattended_owner_proximity_px
-        )
+        current_config["unattended_owner_proximity_px"] = _clamp(body.unattended_owner_proximity_px, 20.0, 1500.0)
     if body.unattended_owner_grace_time is not None:
-        current_config["unattended_owner_grace_time"] = body.unattended_owner_grace_time
+        current_config["unattended_owner_grace_time"] = _clamp(body.unattended_owner_grace_time, 0.1, 60.0)
+    if body.unattended_bystander_attends is not None:
+        current_config["unattended_bystander_attends"] = bool(body.unattended_bystander_attends)
+    if body.unattended_ghost_ttl is not None:
+        current_config["unattended_ghost_ttl"] = _clamp(body.unattended_ghost_ttl, 0.0, 60.0)
+    if body.overcrowding_cluster_distance_px is not None:
+        current_config["overcrowding_cluster_distance_px"] = _clamp(body.overcrowding_cluster_distance_px, 30.0, 800.0)
+    if body.overcrowding_min_cluster_size is not None:
+        current_config["overcrowding_min_cluster_size"] = int(_clamp(body.overcrowding_min_cluster_size, 2, 200))
     if body.fall_persistence_time is not None:
-        current_config["fall_persistence_time"] = max(
-            0.2, min(5.0, float(body.fall_persistence_time))
-        )
+        current_config["fall_persistence_time"] = _clamp(body.fall_persistence_time, 0.2, 5.0)
     if body.fall_model_confidence_threshold is not None:
-        current_config["fall_model_confidence_threshold"] = max(
-            0.05, min(0.95, float(body.fall_model_confidence_threshold))
-        )
+        current_config["fall_model_confidence_threshold"] = _clamp(body.fall_model_confidence_threshold, 0.05, 0.95)
+    if body.fall_person_iou_min is not None:
+        current_config["fall_person_iou_min"] = _clamp(body.fall_person_iou_min, 0.0, 0.95)
     if body.restricted_zone_enabled is not None:
-        current_config["restricted_zone_enabled"] = body.restricted_zone_enabled
+        current_config["restricted_zone_enabled"] = bool(body.restricted_zone_enabled)
     if body.restricted_zone_min_dwell is not None:
-        current_config["restricted_zone_min_dwell"] = body.restricted_zone_min_dwell
+        current_config["restricted_zone_min_dwell"] = _clamp(body.restricted_zone_min_dwell, 0.1, 60.0)
     if body.fight_detection_enabled is not None:
-        current_config["fight_detection_enabled"] = body.fight_detection_enabled
+        current_config["fight_detection_enabled"] = bool(body.fight_detection_enabled)
     if body.fight_proximity_px is not None:
-        current_config["fight_proximity_px"] = body.fight_proximity_px
+        current_config["fight_proximity_px"] = _clamp(body.fight_proximity_px, 30.0, 1000.0)
     if body.fight_min_pair_speed is not None:
-        current_config["fight_min_pair_speed"] = body.fight_min_pair_speed
+        current_config["fight_min_pair_speed"] = _clamp(body.fight_min_pair_speed, 30.0, 1500.0)
     if body.fight_persistence_time is not None:
-        current_config["fight_persistence_time"] = body.fight_persistence_time
+        current_config["fight_persistence_time"] = _clamp(body.fight_persistence_time, 0.2, 10.0)
     if body.fight_min_hit_streak is not None:
-        current_config["fight_min_hit_streak"] = body.fight_min_hit_streak
+        current_config["fight_min_hit_streak"] = int(_clamp(body.fight_min_hit_streak, 1, 30))
     if body.alert_cooldown_secs is not None:
-        _ALERT_COOLDOWN_SECS = max(0.5, float(body.alert_cooldown_secs))
+        _ALERT_COOLDOWN_SECS = _clamp(body.alert_cooldown_secs, 0.5, 600.0)
         current_config["alert_cooldown_secs"] = _ALERT_COOLDOWN_SECS
     if body.loitering_enabled is not None:
-        current_config["loitering_enabled"] = body.loitering_enabled
+        current_config["loitering_enabled"] = bool(body.loitering_enabled)
     if body.loitering_time_threshold is not None:
-        current_config["loitering_time_threshold"] = max(3.0, float(body.loitering_time_threshold))
+        current_config["loitering_time_threshold"] = _clamp(body.loitering_time_threshold, 3.0, 600.0)
     if body.loitering_radius_px is not None:
-        current_config["loitering_radius_px"] = max(30.0, float(body.loitering_radius_px))
+        current_config["loitering_radius_px"] = _clamp(body.loitering_radius_px, 30.0, 1500.0)
     _apply_config()
     return current_config
 
@@ -1645,8 +1916,10 @@ def get_video_status():
         **video_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "model_progress": _yolo_progress(),
         "fall_model_ready": is_fall_model_ready(),
         "fall_model_error": get_fall_model_error(),
+        "fall_model_progress": _fall_progress(),
     }
 
 
@@ -1747,8 +2020,10 @@ def get_stream_status():
         **stream_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "model_progress": _yolo_progress(),
         "fall_model_ready": is_fall_model_ready(),
         "fall_model_error": get_fall_model_error(),
+        "fall_model_progress": _fall_progress(),
     }
 
 
@@ -1761,8 +2036,10 @@ def get_webcam_status():
         **webcam_status,
         "model_ready": is_model_ready(),
         "model_error": get_model_error(),
+        "model_progress": _yolo_progress(),
         "fall_model_ready": is_fall_model_ready(),
         "fall_model_error": get_fall_model_error(),
+        "fall_model_progress": _fall_progress(),
     }
 
 
