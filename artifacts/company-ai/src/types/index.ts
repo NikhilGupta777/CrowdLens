@@ -5,6 +5,9 @@ export interface AlertRecord {
     track_id?: number;
     count?: number;
     cluster_size?: number;
+    cluster_bbox?: [number, number, number, number];
+    cluster_area_px2?: number;
+    density_per_kpx2?: number;
     duration?: number;
     avg_speed?: number;
     body_heights_per_sec?: number;

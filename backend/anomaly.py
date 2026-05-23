@@ -701,7 +701,19 @@ class AnomalyDetector:
 
         Two persons belong to the same cluster if they are within
         OVERCROWDING_CLUSTER_DISTANCE_PX of any cluster member. Returns one
-        dict per cluster: {"size", "centroid": (cx, cy)}.
+        dict per cluster:
+          - ``size``      : member count
+          - ``centroid``  : (cx, cy) of the cluster centroid
+          - ``bbox``      : (x1, y1, x2, y2) tight axis-aligned bounding
+                            box of all member bboxes (NOT just centres)
+          - ``area_px2``  : area of that bbox, used downstream for the
+                            density-per-area metric.
+
+        ``bbox`` and ``area_px2`` are required by the overcrowding emitter
+        to compute a density score (people per 1000 px²).  Sample-based
+        density (count / cluster_bbox_area) means a tight crowd at a
+        doorway scores higher than the same headcount spread across a
+        plaza, which is exactly the operator signal we want.
         """
         if not person_tracks:
             return []
@@ -743,8 +755,19 @@ class AnomalyDetector:
         for members in groups.values():
             cx = sum(centers[i][0] for i in members) / len(members)
             cy = sum(centers[i][1] for i in members) / len(members)
-            clusters.append({"size": len(members),
-                             "centroid": (float(cx), float(cy))})
+            # Tight bbox over ALL member bboxes (full body extents, not
+            # just centres) so density reflects actual physical occupancy.
+            x1 = min(float(person_tracks[i]["x1"]) for i in members)
+            y1 = min(float(person_tracks[i]["y1"]) for i in members)
+            x2 = max(float(person_tracks[i]["x2"]) for i in members)
+            y2 = max(float(person_tracks[i]["y2"]) for i in members)
+            area = max(1.0, (x2 - x1) * (y2 - y1))
+            clusters.append({
+                "size": len(members),
+                "centroid": (float(cx), float(cy)),
+                "bbox": (x1, y1, x2, y2),
+                "area_px2": area,
+            })
         return clusters
 
     def update(
@@ -772,12 +795,30 @@ class AnomalyDetector:
         for cluster in self._cluster_persons(person_tracks):
             if cluster["size"] >= max(threshold, min_cluster):
                 cx, cy = cluster["centroid"]
+                bx1, by1, bx2, by2 = cluster["bbox"]
+                area_px2 = float(cluster["area_px2"])
+                # Density expressed as people per 1000 px² of the cluster
+                # bbox.  Picked so a tight 4-person huddle inside a 200x200
+                # box scores ~0.10 while 4 people spread across the whole
+                # 1280x720 frame scores ~0.004 — three orders of magnitude
+                # lower, which is the right operator signal.
+                density_per_kpx2 = round(
+                    cluster["size"] * 1000.0 / area_px2, 4
+                )
                 anomalies.append({
                     "type": "overcrowding",
                     "count": cluster["size"],
                     "cluster_size": cluster["size"],
+                    "cluster_bbox": [
+                        int(bx1), int(by1), int(bx2), int(by2),
+                    ],
+                    "cluster_area_px2": int(area_px2),
+                    "density_per_kpx2": density_per_kpx2,
                     "position": [cx, cy],
-                    "confidence": round(min(1.0, cluster["size"] / max(threshold, 1) / 2.0 + 0.5), 2),
+                    "confidence": round(
+                        min(1.0, cluster["size"] / max(threshold, 1) / 2.0 + 0.5),
+                        2,
+                    ),
                 })
 
         person_motion: dict[int, dict] = {}

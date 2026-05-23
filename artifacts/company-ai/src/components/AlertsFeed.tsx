@@ -145,6 +145,18 @@ export default function AlertsFeed({ anomalies }: Props) {
                   {a.count !== undefined && (
                     <span style={{ fontSize: 10, color: "#64748b" }}>{a.count} people</span>
                   )}
+                  {a.density_per_kpx2 !== undefined && a.type === "overcrowding" && (
+                    <span
+                      style={{ fontSize: 10, color: "#f97316", fontWeight: 600 }}
+                      title={
+                        a.cluster_area_px2
+                          ? `Cluster footprint ${a.cluster_area_px2} px²`
+                          : undefined
+                      }
+                    >
+                      {a.density_per_kpx2.toFixed(2)} ppl/kpx²
+                    </span>
+                  )}
                   {(a as any).class_name && a.type === "unattended_object" && (
                     <span style={{ fontSize: 10, color: "#f97316", fontWeight: 600 }}>{(a as any).class_name}</span>
                   )}

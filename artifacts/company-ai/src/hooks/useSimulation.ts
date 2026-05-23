@@ -32,6 +32,14 @@ export interface Anomaly {
   track_ids?: number[];
   count?: number;
   cluster_size?: number;
+  /** Tight bbox enclosing the entire cluster (x1, y1, x2, y2) in canonical
+   * 1280x720 canvas coordinates.  Set on overcrowding alerts only. */
+  cluster_bbox?: [number, number, number, number];
+  /** Area of cluster_bbox in pixels². */
+  cluster_area_px2?: number;
+  /** People per 1000 px² of cluster_bbox — high values indicate a tight
+   * huddle, low values a thinly spread crowd. */
+  density_per_kpx2?: number;
   duration?: number;
   avg_speed?: number;
   body_heights_per_sec?: number;
