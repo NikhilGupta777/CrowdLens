@@ -1,6 +1,13 @@
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 
+# ── Persistence / retention ──────────────────────────────────────────────────
+# Maximum number of alert rows kept in SQLite. Older rows are pruned on
+# insert to bound the DB file size on a single-user laptop. The in-memory
+# alert_history deque is a separate cap (default 500) — DB retention is
+# what the AlertHistory table reads from after a restart.
+DB_ALERT_RETENTION = 5000
+
 # YOLO11m — Medium model for accurate crowd analysis.
 YOLO_MODEL = "yolo11m.pt"
 CONFIDENCE_THRESHOLD = 0.25
@@ -33,6 +40,21 @@ TRACKER_MIN_HITS = 1
 # Lower IOU threshold accepts larger positional shifts between frames.
 MAX_AGE = 30
 IOU_THRESHOLD = 0.25
+
+# Object-class track hold (cars, baggage). Tracks remain alive for this many
+# frames after detection is lost so a brief occlusion does not produce a new
+# SORT id (which would reset the unattended-object stationary timer).
+OBJECT_TRACK_HOLD_FRAMES = 30
+# Bounded center-distance fallback for object association when IoU is unreliable
+# (small bags, distant cars). Detections farther than this many pixels from a
+# predicted track are never matched, regardless of IoU.
+OBJECT_ASSOCIATION_DISTANCE_PX = 95.0
+# Baggage tracks confirmed at high confidence are held longer through occlusion
+# than weak-confidence ones. Tuned so a real bag survives a person walking
+# past it but a one-frame YOLO false positive is pruned promptly.
+BAGGAGE_STRONG_HOLD_FRAMES = 120
+BAGGAGE_WEAK_HOLD_FRAMES = 45
+BAGGAGE_STRONG_CONFIDENCE = 0.20
 
 # Anomaly detection settings
 OVERCROWDING_THRESHOLD = 4
@@ -86,6 +108,10 @@ UNATTENDED_GHOST_CELL_PX = 96            # spatial bucket size for ghost lookup
 # ── Fall detection ───────────────────────────────────────────────────────────
 FALL_PERSISTENCE_TIME = 1.2
 FALL_MODEL_CONFIDENCE_THRESHOLD = 0.35
+# How long a confirmed fall stays "active" after the model stops emitting
+# the bbox. During this window the alert is still surfaced so the operator
+# can react even if the fall detector blinks (occlusion / pose change).
+FALL_ALERT_HOLD_TIME = 3.0
 # Sanity filters on top of the HF fall model. The model itself classifies
 # "fallen" — these checks reject obvious false positives without rejecting
 # valid forward-collapse / kneeling falls.

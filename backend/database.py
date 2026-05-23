@@ -5,6 +5,8 @@ import sqlite3
 import threading
 from collections import deque
 
+import backend.config as _cfg
+
 _DB_PATH = os.path.join(os.path.dirname(__file__), "crowdlens.db")
 
 _thread_local = threading.local()
@@ -90,6 +92,25 @@ def _insert_alert_sync(entry: dict):
                 entry.get("snapshot_url"),
             ),
         )
+        # Bound DB size on a long-running single-user session. Without this,
+        # months of operation accumulate hundreds of MB of alert rows that
+        # the UI never displays (it caps at 200 in the request and 500 in
+        # the deque). Trim only when over the cap and only once per insert
+        # to keep this cheap; SQLite handles the index rewrite efficiently.
+        retention = int(getattr(_cfg, "DB_ALERT_RETENTION", 5000))
+        if retention > 0:
+            cur = conn.execute("SELECT COUNT(*) AS n FROM alerts").fetchone()
+            count = int(cur["n"]) if cur else 0
+            if count > retention:
+                # Delete the oldest (count - retention) rows. Index on
+                # timestamp DESC keeps this O(log n) seek.
+                excess = count - retention
+                conn.execute(
+                    "DELETE FROM alerts WHERE id IN ("
+                    "  SELECT id FROM alerts ORDER BY timestamp ASC LIMIT ?"
+                    ")",
+                    (excess,),
+                )
         conn.commit()
     except (sqlite3.DatabaseError, sqlite3.OperationalError) as e:
         # Log but don't crash the background thread on DB write failures
