@@ -4,6 +4,8 @@
 
 ## 1. CURRENT FIGHT DETECTION — DETAILED ANALYSIS
 
+> **Status:** Implemented as a heuristic prototype (see §1.2 below). For pose-based / action-recognition upgrades, see §2.
+
 ### 1.1 What Has Been Implemented
 
 The current fight detection in CrowdLens is a **heuristic pair-motion detector**. It does NOT use computer vision pose estimation or action recognition — it relies purely on tracking data (bounding box movements).
@@ -32,6 +34,7 @@ for each pair (person_A, person_B) in tracked_persons:
 | FIGHT_MIN_PAIR_SPEED | 240 px/s | Min speed for BOTH persons |
 | FIGHT_PERSISTENCE_TIME | 0.8 s | How long before alert |
 | FIGHT_MIN_HIT_STREAK | 3 | Track stability requirement |
+| FIGHT_RESET_GRACE_TIME | 0.4 s | Tolerance for single-frame speed/proximity dips before timer resets |
 
 ### 1.4 Strengths of Current Approach
 - ✅ Zero additional model overhead (uses existing tracking data)
@@ -115,15 +118,16 @@ Train or fine-tune a model specifically for violence/fight detection:
 
 ### 3.1 Phase 1 — Enhancements (1-3 months)
 
+> **Status update:** Polygon restricted zones, loitering detection, and improved fight detection (relative-velocity heuristics, grace-time tolerance) are already implemented; see §4.1 below for the current authoritative feature matrix. The table below tracks **future** work only.
+
 | Feature | Priority | Difficulty | Description |
 |---------|----------|-----------|-------------|
 | Multi-camera support | HIGH | Medium | Process 2-4 cameras simultaneously via worker processes |
-| Improved fight detection | HIGH | Medium | Add relative velocity + acceleration heuristics |
-| Polygon restricted zones | MEDIUM | Low | Arbitrary shape zones (not just rectangles) |
+| Pose-based fight detection | HIGH | Medium | Add MediaPipe / YOLOv8-Pose to disambiguate playing / sports / actual fights |
 | Alert severity levels | MEDIUM | Low | Categorize alerts by severity with different responses |
 | User authentication | MEDIUM | Medium | Login system for dashboard access |
-| Video recording/DVR | MEDIUM | Medium | Record streams for later review |
-| Telegram/Slack alerts | LOW | Low | Additional notification channels |
+| Video recording / DVR | MEDIUM | Medium | Record streams for later review |
+| Telegram / Slack alerts | LOW | Low | Additional notification channels |
 
 ### 3.2 Phase 2 — Advanced Detection (3-6 months)
 
@@ -132,7 +136,6 @@ Train or fine-tune a model specifically for violence/fight detection:
 | Pose estimation | HIGH | Medium | MediaPipe/OpenPose for posture analysis |
 | Weapon detection | HIGH | Medium | Fine-tuned YOLO for knife/gun detection |
 | Smoke/fire detection | MEDIUM | Medium | Dedicated detection model |
-| Loitering detection | MEDIUM | Low | Track dwelling time in areas |
 | Direction-of-travel | MEDIUM | Low | Detect wrong-way movement |
 | Crowd density mapping | LOW | Medium | Heatmap history over time |
 | Path analysis | LOW | High | Track movement patterns |
@@ -176,14 +179,14 @@ Train or fine-tune a model specifically for violence/fight detection:
 | **Tracking** | Multi-object tracking | ✅ | SORT + Kalman |
 | | Re-identification | ❌ | Would need appearance features (Deep SORT) |
 | | Cross-camera tracking | ❌ | Future - needs multi-cam support first |
-| **Anomaly** | Running | ✅ | Speed-based |
-| | Overcrowding | ✅ | Count-based |
-| | Unattended object | ✅ | Stationary + owner absent |
-| | Fall detection | ✅ | Dedicated HF model |
-| | Fight detection (heuristic) | ✅ | Pair proximity + speed |
-| | Fight detection (vision) | ❌ | Needs pose/action recognition |
-| | Restricted zone | ✅ | Rectangular zones |
-| | Loitering | ❌ | Track dwell time |
+| **Anomaly** | Running | ✅ | Speed-based with body-heights/sec dual metric |
+| | Overcrowding | ✅ | Spatial-cluster based (single-link), not raw count |
+| | Unattended object | ✅ | Stationary + owner absent, with bag-ghost cache across SORT id churn |
+| | Fall detection | ✅ | Dedicated HF model (melihuzunoglu/human-fall-detection) with NMS + IoU-association to person tracks |
+| | Fight detection (heuristic) | ✅ | Pair proximity + speed + persistence with 0.4 s grace-time tolerance |
+| | Fight detection (vision) | ❌ | Future — needs pose / action recognition |
+| | Restricted zone | ✅ | Rectangular AND polygon zones; foot-point + bbox-overlap detection |
+| | Loitering | ✅ | Anchor + hysteresis dwell timer with re-anchor factor |
 | | Wrong-way movement | ❌ | Direction analysis |
 | | Abandoned vehicle | ❌ | Vehicle stationary detection |
 | **Input** | Browser webcam | ✅ | getUserMedia + WS relay |
@@ -219,6 +222,18 @@ Train or fine-tune a model specifically for violence/fight detection:
 | | Authentication | ❌ | No login system |
 | | Role-based access | ❌ | No permissions |
 | | Encryption | ❌ | No TLS by default |
+
+### 4.2 Recently Completed (Phase A–C audit fixes)
+
+The repo went through a deep audit pass that fixed several detection-correctness bugs and added missing tunability. The matrix above already reflects the *result*, but some changes are not feature-shaped and so don't appear there:
+
+| Area | Change |
+|------|--------|
+| Tracker tuning | `MAX_AGE`, `IOU_THRESHOLD`, `TRACKER_MIN_HITS`, `OBJECT_TRACK_HOLD_FRAMES`, `BAGGAGE_*_HOLD_FRAMES`, `BAGGAGE_STRONG_CONFIDENCE`, `OBJECT_ASSOCIATION_DISTANCE_PX`, `FALL_ALERT_HOLD_TIME`, `FIGHT_RESET_GRACE_TIME` are now `PUT /api/config` tunables (no restart) |
+| Anomaly correctness | Loitering / running / restricted_zone / fight no longer accumulate timers on predicted (held-over) tracks. Fight detection has 0.4 s grace-time tolerance. Sticky `restricted_zone` cards now key on `(track_id, zone_id)` so two overlapping zones produce two cards |
+| Persistence | SQLite alerts table has retention cap (`DB_ALERT_RETENTION`, default 5000). `ALTER TABLE` migration adds `snapshot_url` for older DBs. `/api/alerts/clear` also wipes archive JPGs. `/api/archive/capture` rejects when mode is idle. `_alert_id_counter` is monotonic now (no reset on clear) |
+| AI streaming | `/api/ai/chat` uses Gemini's `streamGenerateContent` SSE endpoint for real word-by-word streaming (was a single chunk after a 5 s wait) |
+| UX | Connecting overlay surfaces `model_progress.stage` from `/api/health` (`exporting_onnx`, `warmup_gpu`, `downloading`, etc.) so the user knows what's happening during cold start. AI reports + chat now persist in `localStorage` with `{v:1}` schema versioning. Camera profiles likewise. AlertHistory shows filtered-vs-total counts |
 
 ---
 
