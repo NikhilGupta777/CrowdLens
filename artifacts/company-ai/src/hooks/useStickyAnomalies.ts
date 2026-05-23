@@ -7,6 +7,26 @@ interface StickyAnomaly {
 }
 
 /**
+ * Per-anomaly-type sticky-hold durations. Critical events stay visible
+ * longer because operators need to react; transient events expire faster
+ * to avoid cluttering the feed when the underlying behaviour stops.
+ *
+ * If a holdMs override is passed to the hook, it is used as the default
+ * for unknown types only; known types still use these per-type values.
+ */
+const DEFAULT_HOLD_MS_BY_TYPE: Record<string, number> = {
+  fall_detected:     12000,
+  fight_suspected:   12000,
+  restricted_zone:   10000,
+  unattended_object: 10000,
+  loitering:          8000,
+  running:            6000,
+  overcrowding:       6000,
+};
+
+const FALLBACK_HOLD_MS = 8000;
+
+/**
  * Generate a stable deduplication key for an anomaly.
  *
  * Strategy by type:
@@ -14,7 +34,9 @@ interface StickyAnomaly {
  * - fight_suspected: keyed by sorted track pair
  * - unattended_object: keyed by track_id (the object's tracker ID)
  * - fall_detected: keyed by bbox grid cell (fall has no stable track_id)
- * - overcrowding: singleton key (only one overcrowding alert at a time)
+ * - overcrowding: keyed by cluster centroid grid cell so multiple distinct
+ *   crowds (now that backend emits one alert per cluster) do not collapse
+ *   into a single sticky entry.
  */
 function anomalyKey(anomaly: Anomaly): string {
   const t = anomaly.type;
@@ -33,8 +55,13 @@ function anomalyKey(anomaly: Anomaly): string {
     return `${t}:${sorted.join("-")}`;
   }
 
-  // Overcrowding: only one active at a time globally
+  // Overcrowding: backend emits one alert per cluster, so key by cluster
+  // centroid (96 px grid) so two distinct crowds get two sticky cards.
   if (t === "overcrowding") {
+    if (anomaly.position) {
+      const [x, y] = anomaly.position;
+      return `${t}:${Math.round(x / 96)}:${Math.round(y / 96)}`;
+    }
     return "overcrowding";
   }
 
@@ -60,11 +87,31 @@ function anomalyKey(anomaly: Anomaly): string {
 }
 
 
-export function useStickyAnomalies(anomalies: Anomaly[], holdMs = 8000): Anomaly[] {
+export function useStickyAnomalies(
+  anomalies: Anomaly[],
+  holdMsOverrideOrDefault?: number | Record<string, number>,
+): Anomaly[] {
   const [sticky, setSticky] = useState<Record<string, StickyAnomaly>>({});
   // Track the latest anomalies ref to avoid stale closure in interval
   const latestAnomaliesRef = useRef(anomalies);
   latestAnomaliesRef.current = anomalies;
+
+  // Resolve effective hold-by-type: per-type table merges with optional override.
+  const holdByType: Record<string, number> = (() => {
+    if (!holdMsOverrideOrDefault) return DEFAULT_HOLD_MS_BY_TYPE;
+    if (typeof holdMsOverrideOrDefault === "number") {
+      // Numeric override is treated as a uniform default for ALL types
+      // (preserves backwards-compat with the previous holdMs API).
+      return Object.fromEntries(
+        Object.keys(DEFAULT_HOLD_MS_BY_TYPE).map((t) => [t, holdMsOverrideOrDefault]),
+      );
+    }
+    return { ...DEFAULT_HOLD_MS_BY_TYPE, ...holdMsOverrideOrDefault };
+  })();
+  const fallbackHold =
+    typeof holdMsOverrideOrDefault === "number"
+      ? holdMsOverrideOrDefault
+      : FALLBACK_HOLD_MS;
 
   // Update sticky map when new anomalies arrive
   useEffect(() => {
@@ -83,15 +130,17 @@ export function useStickyAnomalies(anomalies: Anomaly[], holdMs = 8000): Anomaly
       // Upsert current frame's anomalies (extends expiry if already exists)
       for (const anomaly of anomalies) {
         const key = anomalyKey(anomaly);
+        const hold = holdByType[anomaly.type] ?? fallbackHold;
         next[key] = {
           anomaly,  // always use latest data (updated duration, position, etc.)
-          expiresAt: now + holdMs,
+          expiresAt: now + hold,
         };
       }
 
       return next;
     });
-  }, [anomalies, holdMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anomalies]);
 
   // Periodic cleanup of expired entries
   useEffect(() => {

@@ -263,10 +263,14 @@ type SourceMode = "idle" | "video" | "webcam" | "stream";
 interface RestrictedZone {
   id: string;
   name?: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
+  shape?: "rect" | "polygon";
+  // Rect coordinates (only present when shape === "rect" or omitted)
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  // Polygon points (only present when shape === "polygon")
+  points?: [number, number][];
 }
 
 interface SmoothedBox {
@@ -413,20 +417,50 @@ function SimulationCanvas({
           ctx.setLineDash([6, 5]);
           ctx.lineWidth = isActive ? 2.5 : 1.6;
           ctx.strokeStyle = isActive ? "rgba(234,179,8,0.95)" : "rgba(234,179,8,0.45)";
-          ctx.strokeRect(zone.x1, zone.y1, zone.x2 - zone.x1, zone.y2 - zone.y1);
-          ctx.setLineDash([]);
-
           ctx.fillStyle = isActive ? "rgba(234,179,8,0.16)" : "rgba(234,179,8,0.08)";
-          ctx.fillRect(zone.x1, zone.y1, zone.x2 - zone.x1, zone.y2 - zone.y1);
+
+          let labelX = 0;
+          let labelY = 0;
+
+          if (zone.shape === "polygon" && Array.isArray(zone.points) && zone.points.length >= 3) {
+            // Draw filled polygon path
+            ctx.beginPath();
+            const [px0, py0] = zone.points[0];
+            ctx.moveTo(px0, py0);
+            for (let i = 1; i < zone.points.length; i++) {
+              const [px, py] = zone.points[i];
+              ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Anchor the label near the top-left vertex so it stays readable
+            // even for irregular polygons.
+            const xs = zone.points.map(([x]) => x);
+            const ys = zone.points.map(([, y]) => y);
+            labelX = Math.min(...xs);
+            labelY = Math.min(...ys);
+          } else {
+            const x1 = zone.x1 ?? 0;
+            const y1 = zone.y1 ?? 0;
+            const x2 = zone.x2 ?? 0;
+            const y2 = zone.y2 ?? 0;
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+            ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+            labelX = x1;
+            labelY = y1;
+          }
+          ctx.setLineDash([]);
 
           const zoneLabel = zone.name ? `${zone.name} (${zone.id})` : zone.id;
           ctx.font = "700 10px monospace";
           const lw = ctx.measureText(zoneLabel).width;
-          roundRect(ctx, zone.x1 + 6, Math.max(6, zone.y1 - 18), lw + 12, 14, 4);
+          roundRect(ctx, labelX + 6, Math.max(6, labelY - 18), lw + 12, 14, 4);
           ctx.fillStyle = isActive ? "rgba(234,179,8,0.85)" : "rgba(234,179,8,0.6)";
           ctx.fill();
           ctx.fillStyle = "#05080f";
-          ctx.fillText(zoneLabel, zone.x1 + 12, Math.max(16, zone.y1 - 8));
+          ctx.fillText(zoneLabel, labelX + 12, Math.max(16, labelY - 8));
         }
       }
 
@@ -623,7 +657,18 @@ export default memo(SimulationCanvas, (prev, next) => {
       const pz = prev.restrictedZones?.[i];
       const nz = next.restrictedZones?.[i];
       if (!pz || !nz) return false;
-      if (pz.id !== nz.id || pz.x1 !== nz.x1 || pz.y1 !== nz.y1 || pz.x2 !== nz.x2 || pz.y2 !== nz.y2) return false;
+      if (pz.id !== nz.id) return false;
+      if ((pz.shape ?? "rect") !== (nz.shape ?? "rect")) return false;
+      if ((pz.shape ?? "rect") === "polygon") {
+        const pp = pz.points ?? [];
+        const np = nz.points ?? [];
+        if (pp.length !== np.length) return false;
+        for (let j = 0; j < pp.length; j++) {
+          if (pp[j][0] !== np[j][0] || pp[j][1] !== np[j][1]) return false;
+        }
+      } else {
+        if (pz.x1 !== nz.x1 || pz.y1 !== nz.y1 || pz.x2 !== nz.x2 || pz.y2 !== nz.y2) return false;
+      }
     }
   }
   if (prev.tracks.length !== next.tracks.length) return false;

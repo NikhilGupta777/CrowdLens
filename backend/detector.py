@@ -33,6 +33,12 @@ _model        = None
 _model_ready  = False
 _model_error: str | None = None
 _model_device = "cpu"
+# Loading-progress stage strings published via get_loading_progress().
+# Sequence: idle -> exporting_onnx -> loading_onnx -> warmup_gpu -> warmup_cpu
+# -> loading_pytorch -> warmup_pytorch_gpu -> warmup_pytorch_cpu -> ready
+# -> error. Used by /api/{video,stream,webcam}/status so the UI can show
+# "Loading… (warmup_gpu)" instead of an indefinite spinner.
+_model_stage: str = "idle"
 _lock         = threading.Lock()
 
 
@@ -42,6 +48,20 @@ def is_model_ready() -> bool:
 
 def get_model_error() -> str | None:
     return _model_error
+
+
+def get_model_stage() -> str:
+    return _model_stage
+
+
+def get_loading_progress() -> dict:
+    """Public progress payload for status endpoints."""
+    return {
+        "stage": _model_stage,
+        "ready": _model_ready,
+        "error": _model_error,
+        "device": _model_device,
+    }
 
 
 def _try_warmup(model, label: str, device: str | None = None):
@@ -126,10 +146,11 @@ def _download_model():
       4. PyTorch + CPU (slowest, always works)
     Runs in a background thread at startup.
     """
-    global _model, _model_ready, _model_error, _model_device
+    global _model, _model_ready, _model_error, _model_device, _model_stage
     try:
         from ultralytics import YOLO
 
+        _model_stage = "starting"
         has_cuda = torch.cuda.is_available()
         if has_cuda:
             gpu_name = torch.cuda.get_device_name(0)
@@ -139,6 +160,7 @@ def _download_model():
 
         # ── Export to ONNX if not already done ─────────────────────────────────
         if not os.path.exists(ONNX_PATH):
+            _model_stage = "exporting_onnx"
             print(f"[detector] Exporting {MODEL_PATH} → {ONNX_PATH} (one-time ~30 s)…")
             try:
                 pt_model = YOLO(MODEL_PATH)
@@ -156,6 +178,7 @@ def _download_model():
 
         # ── Strategy 1: ONNX Runtime (try GPU then CPU) ───────────────────────
         if os.path.exists(ONNX_PATH):
+            _model_stage = "loading_onnx"
             print(f"[detector] Loading {ONNX_PATH} via ONNX Runtime…")
             try:
                 model = YOLO(ONNX_PATH)
@@ -163,50 +186,60 @@ def _download_model():
                 # Try GPU-accelerated ONNX first
                 if has_cuda:
                     try:
+                        _model_stage = "warmup_onnx_gpu"
                         _try_warmup(model, "ONNX Runtime + GPU", device="0")
                         _model = model
                         _model_device = "cuda:0"
                         _model_ready = True
+                        _model_stage = "ready"
                         print("[detector] ✓ Model ready via ONNX Runtime (GPU).")
                         return
                     except Exception as gpu_err:
                         print(f"[detector] ONNX GPU failed ({gpu_err}); trying ONNX CPU…")
 
                 # Try CPU ONNX
+                _model_stage = "warmup_onnx_cpu"
                 _try_warmup(model, "ONNX Runtime + CPU", device="cpu")
                 _model = model
                 _model_device = "cpu"
                 _model_ready = True
+                _model_stage = "ready"
                 print("[detector] ✓ Model ready via ONNX Runtime (CPU).")
                 return
             except Exception as onnx_err:
                 print(f"[detector] ONNX Runtime failed entirely ({onnx_err}); falling back to PyTorch")
 
         # ── Strategy 2: PyTorch (try GPU then CPU) ────────────────────────────
+        _model_stage = "loading_pytorch"
         print(f"[detector] Loading {MODEL_PATH} via PyTorch…")
         model = YOLO(MODEL_PATH)
 
         if has_cuda:
             try:
                 model.to("cuda:0")
+                _model_stage = "warmup_pytorch_gpu"
                 _try_warmup(model, "PyTorch + GPU", device="0")
                 _model = model
                 _model_device = "cuda:0"
                 _model_ready = True
+                _model_stage = "ready"
                 print("[detector] ✓ Model ready via PyTorch (GPU).")
                 return
             except Exception as pt_gpu_err:
                 print(f"[detector] PyTorch GPU failed ({pt_gpu_err}); using CPU…")
 
         model.to("cpu")
+        _model_stage = "warmup_pytorch_cpu"
         _try_warmup(model, "PyTorch + CPU", device="cpu")
         _model = model
         _model_device = "cpu"
         _model_ready = True
+        _model_stage = "ready"
         print("[detector] ✓ Model ready via PyTorch (CPU).")
 
     except Exception as e:
         _model_error = str(e)
+        _model_stage = "error"
         print(f"[detector] Fatal model error: {e}")
 
 

@@ -36,14 +36,27 @@ IOU_THRESHOLD = 0.25
 
 # Anomaly detection settings
 OVERCROWDING_THRESHOLD = 4
+# Spatial clustering for overcrowding: two persons belong to the same cluster
+# if they are within this many pixels (single-link chain). The threshold then
+# applies per cluster, so a tight crowd at a doorway triggers an alert even
+# when total scene count is low, and a wide plaza with people scattered
+# across it does not falsely alert just because the headcount is high.
+OVERCROWDING_CLUSTER_DISTANCE_PX = 200.0
+OVERCROWDING_MIN_CLUSTER_SIZE = 4        # min cluster size to emit an alert
 
 # ── Running detection ────────────────────────────────────────────────────────
-# Running uses two complementary metrics so it works at any camera distance:
-#   1. Raw pixel speed (fixed threshold) — works well at known camera distance
-#   2. Body-heights/sec (relative to bbox height) — distance-invariant
-# A track is flagged as running if EITHER metric clearly exceeds its threshold.
-RUNNING_SPEED_THRESHOLD = 270.0          # px/sec at 1280×720 canvas
+# Running uses BOTH:
+#   1. Body-heights/sec (relative to bbox height) — primary, distance-invariant
+#   2. Raw pixel speed floor (RUNNING_PIXEL_FLOOR) — anti-jitter guard against
+#      tiny/stuttering bboxes producing huge body-heights/sec from noise
+# A track is flagged as running when body-heights/sec >= threshold AND raw
+# pixel speed >= RUNNING_PIXEL_FLOOR. The legacy raw-speed-only path is
+# preserved as a fallback for very wide camera setups (RUNNING_SPEED_THRESHOLD).
+RUNNING_SPEED_THRESHOLD = 270.0          # px/sec at 1280×720 canvas (legacy fallback)
 RUNNING_BODY_HEIGHTS_PER_SEC = 1.6       # ~1.6 body heights/sec ≈ jogging+
+# Anti-jitter floor. A tiny bbox (e.g. 30 px tall) can produce 2 body-heights
+# /sec from a few pixels of YOLO jitter; the floor rejects those false positives.
+RUNNING_PIXEL_FLOOR = 60.0               # px/sec absolute minimum
 RUNNING_PERSISTENCE_TIME = 0.6
 RUNNING_MIN_HIT_STREAK = 3
 # Tolerate brief speed dips (single-frame stutter, momentary YOLO miss) before
@@ -61,6 +74,14 @@ UNATTENDED_OWNER_GRACE_TIME = 2.0
 # prevents false-positives in busy areas where the owner walks away but a
 # different person is standing right next to the bag.
 UNATTENDED_BYSTANDER_ATTENDS = True
+# Ghost cache: when a baggage SORT track dies (occluded > MAX_AGE), cache its
+# state for this many seconds in a spatial-cell map. If a new baggage track
+# appears in the same cell within the TTL, restore stationary_since /
+# owner_id / owner_absent_since so the unattended timer is not reset by SORT
+# ID churn. Required to detect bags abandoned for 4+ seconds with brief
+# occlusions, which previously kept restarting the 5-second stationary timer.
+UNATTENDED_GHOST_TTL = 8.0
+UNATTENDED_GHOST_CELL_PX = 96            # spatial bucket size for ghost lookup
 
 # ── Fall detection ───────────────────────────────────────────────────────────
 FALL_PERSISTENCE_TIME = 1.2
@@ -70,6 +91,11 @@ FALL_MODEL_CONFIDENCE_THRESHOLD = 0.35
 # valid forward-collapse / kneeling falls.
 FALL_MIN_AREA_RATIO = 0.005              # min bbox area / frame area (~0.5%)
 FALL_ASPECT_RATIO_MIN = 0.40             # min width/height of a fallen box
+# Minimum IoU between a fall bbox and a person track bbox to associate the
+# fall with that track id. Helps distinguish concurrent falls and avoids
+# all falls falling back to spatial-cell cooldown buckets (which previously
+# merged two simultaneous falls within the same 128 px cell into one alert).
+FALL_PERSON_IOU_MIN = 0.20
 
 # ── Restricted zone ──────────────────────────────────────────────────────────
 RESTRICTED_ZONE_ENABLED = True
@@ -104,9 +130,13 @@ BAGGAGE_CONFIDENCE_FLOOR = 0.10
 # Keep this narrow: bags only. Bottles, animals, phones, books, etc. remain off.
 UNATTENDED_CLASSES = [24, 26, 28]
 
-# Rectangular digital-fence areas in absolute frame coordinates (1280x720).
+# Rectangular or polygon digital-fence areas in absolute frame coordinates
+# (1280x720). Each zone has a "shape" field: "rect" (uses x1/y1/x2/y2) or
+# "polygon" (uses points: [[x,y], ...]). Existing rectangle-only zones still
+# work without an explicit "shape" key — they're treated as rectangles.
 RESTRICTED_ZONES = [
-    {"id": "RZ1", "name": "Restricted Zone A", "x1": 920, "y1": 80, "x2": 1240, "y2": 520},
+    {"id": "RZ1", "name": "Restricted Zone A", "shape": "rect",
+     "x1": 920, "y1": 80, "x2": 1240, "y2": 520},
 ]
 
 # Active detection classes. Keep this intentionally narrow for reliability.

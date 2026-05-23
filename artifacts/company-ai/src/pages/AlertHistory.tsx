@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, BarChart2, Camera, Download, Filter, RefreshCw, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap } from "lucide-react";
+import { AlertCircle, BarChart2, Camera, Clock, Download, Filter, Package, RefreshCw, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap } from "lucide-react";
 import { useIsMobile } from "../hooks/use-mobile";
 import { AlertRecord } from "../types";
 import {
@@ -12,14 +12,17 @@ import {
   YAxis,
 } from "recharts";
 
+// Each anomaly type uses a distinct icon so the history filter chips and
+// summary cards are glance-readable: overcrowding=Users (group), loitering=
+// Clock (dwell time), unattended_object=Package (the bag).
 const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string; severity: string }> = {
   running:           { color: "#a855f7", Icon: Zap,         label: "Running",            severity: "CRITICAL" },
   fight_suspected:   { color: "#f43f5e", Icon: AlertCircle, label: "Fight Suspected",    severity: "CRITICAL" },
-  unattended_object: { color: "#ef4444", Icon: AlertCircle, label: "Unattended Object",  severity: "HIGH" },
+  unattended_object: { color: "#ef4444", Icon: Package,     label: "Unattended Object",  severity: "HIGH" },
   overcrowding:      { color: "#f97316", Icon: Users,       label: "Overcrowding",       severity: "MEDIUM" },
   fall_detected:     { color: "#dc2626", Icon: UserRoundX,  label: "Fall Detected",      severity: "HIGH" },
   restricted_zone:   { color: "#eab308", Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH" },
-  loitering:         { color: "#6366f1", Icon: Users,       label: "Loitering",          severity: "MEDIUM" },
+  loitering:         { color: "#6366f1", Icon: Clock,       label: "Loitering",          severity: "MEDIUM" },
   manual_snapshot:   { color: "#60a5fa", Icon: Camera,      label: "Manual Snapshot",    severity: "INFO" },
 };
 

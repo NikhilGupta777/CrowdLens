@@ -20,6 +20,8 @@ from backend.config import (
 _fall_model = None
 _fall_model_ready = False
 _fall_model_error: str | None = None
+# Loading-progress stage: idle -> downloading -> warmup -> ready -> error
+_fall_model_stage: str = "idle"
 _lock = threading.Lock()
 
 
@@ -31,8 +33,21 @@ def get_fall_model_error() -> str | None:
     return _fall_model_error
 
 
+def get_fall_model_stage() -> str:
+    return _fall_model_stage
+
+
+def get_fall_loading_progress() -> dict:
+    """Public progress payload for status endpoints."""
+    return {
+        "stage": _fall_model_stage,
+        "ready": _fall_model_ready,
+        "error": _fall_model_error,
+    }
+
+
 def _download_fall_model() -> None:
-    global _fall_model, _fall_model_ready, _fall_model_error
+    global _fall_model, _fall_model_ready, _fall_model_error, _fall_model_stage
     try:
         from huggingface_hub import hf_hub_download
         from ultralytics import YOLO
@@ -42,19 +57,23 @@ def _download_fall_model() -> None:
             model_path = local_override
             print(f"[fall-detector] Using local fall model: {model_path}")
         else:
+            _fall_model_stage = "downloading"
             model_path = hf_hub_download(
                 repo_id="melihuzunoglu/human-fall-detection",
                 filename="best.pt",
             )
+        _fall_model_stage = "warmup"
         model = YOLO(model_path)
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
         model(dummy, conf=FALL_MODEL_CONFIDENCE_THRESHOLD, verbose=False)
         # Assign model first, then set ready flag (memory ordering safety)
         _fall_model = model
         _fall_model_ready = True
+        _fall_model_stage = "ready"
         print("[fall-detector] Fall model ready (Hugging Face YOLOv11).")
     except Exception as e:
         _fall_model_error = str(e)
+        _fall_model_stage = "error"
         print(f"[fall-detector] Failed to load fall model: {e}")
 
 
