@@ -28,4 +28,7 @@ export interface AlertRecord {
   iso: string;
   source?: string;
   snapshot_url?: string | null;
+  acked?: 0 | 1;
+  acked_at?: number | null;
+  escalated?: boolean;
 }

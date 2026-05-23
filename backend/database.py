@@ -48,29 +48,36 @@ def _init_db_sync():
             timestamp   REAL    NOT NULL,
             iso         TEXT    NOT NULL,
             source      TEXT    NOT NULL DEFAULT '',
-            snapshot_url TEXT
+            snapshot_url TEXT,
+            acked       INTEGER NOT NULL DEFAULT 0,
+            acked_at    REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC)")
 
     # Forward-migration for DBs created before snapshot_url existed.
-    # Without this, a user upgrading from an older build hits
-    # `sqlite3.OperationalError: no such column: snapshot_url` on the very
-    # first alert insert, because CREATE TABLE IF NOT EXISTS only runs when
-    # the table is missing and never adds columns to an existing table.
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
     if "snapshot_url" not in cols:
         try:
             conn.execute("ALTER TABLE alerts ADD COLUMN snapshot_url TEXT")
         except sqlite3.OperationalError as e:
-            # If the column races in (multiple processes, very unlikely on
-            # local single-user) just log and continue.
             print(f"[database] ALTER TABLE add snapshot_url skipped: {e}")
     if "source" not in cols:
         try:
             conn.execute("ALTER TABLE alerts ADD COLUMN source TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError as e:
             print(f"[database] ALTER TABLE add source skipped: {e}")
+    # Forward-migration: add acked/acked_at for DBs created before Phase 3.
+    if "acked" not in cols:
+        try:
+            conn.execute("ALTER TABLE alerts ADD COLUMN acked INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as e:
+            print(f"[database] ALTER TABLE add acked skipped: {e}")
+    if "acked_at" not in cols:
+        try:
+            conn.execute("ALTER TABLE alerts ADD COLUMN acked_at REAL")
+        except sqlite3.OperationalError as e:
+            print(f"[database] ALTER TABLE add acked_at skipped: {e}")
 
     conn.commit()
 
@@ -80,8 +87,8 @@ def _insert_alert_sync(entry: dict):
         conn = _get_conn()
         conn.execute(
             """
-            INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO alerts (alert_id, anomaly, timestamp, iso, source, snapshot_url, acked, acked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry["id"],
@@ -90,6 +97,8 @@ def _insert_alert_sync(entry: dict):
                 entry["iso"],
                 entry.get("source", ""),
                 entry.get("snapshot_url"),
+                int(entry.get("acked", 0)),
+                entry.get("acked_at"),
             ),
         )
         # Bound DB size on a long-running single-user session. Without this,
@@ -131,6 +140,8 @@ def _load_alerts_sync(limit: int = 500) -> list[dict]:
             "iso": row["iso"],
             "source": row["source"],
             "snapshot_url": row["snapshot_url"],
+            "acked": int(row["acked"]) if row["acked"] is not None else 0,
+            "acked_at": row["acked_at"],
         })
     return results
 
@@ -139,6 +150,28 @@ def _clear_alerts_sync():
     conn = _get_conn()
     conn.execute("DELETE FROM alerts")
     conn.commit()
+
+
+def _ack_alert_sync(alert_id: int, acked_at: float) -> bool:
+    """Mark a single alert as acknowledged. Returns True if a row was updated."""
+    conn = _get_conn()
+    cur = conn.execute(
+        "UPDATE alerts SET acked = 1, acked_at = ? WHERE alert_id = ? AND acked = 0",
+        (acked_at, alert_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _ack_all_alerts_sync(acked_at: float) -> int:
+    """Acknowledge all unacked alerts. Returns the number of rows updated."""
+    conn = _get_conn()
+    cur = conn.execute(
+        "UPDATE alerts SET acked = 1, acked_at = ? WHERE acked = 0",
+        (acked_at,),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 async def init_db():
@@ -157,8 +190,19 @@ async def clear_alerts():
     await asyncio.to_thread(_clear_alerts_sync)
 
 
+async def ack_alert(alert_id: int, acked_at: float) -> bool:
+    return await asyncio.to_thread(_ack_alert_sync, alert_id, acked_at)
+
+
+async def ack_all_alerts(acked_at: float) -> int:
+    return await asyncio.to_thread(_ack_all_alerts_sync, acked_at)
+
+
 def load_into_deque(dq: deque):
     """Synchronously populate an existing deque from the DB (called at startup)."""
     rows = _load_alerts_sync(dq.maxlen or 500)
     for row in reversed(rows):
+        # Stamp escalated=False on load; the escalation loop re-flags
+        # any unacked+old entries within its first 10-second tick.
+        row.setdefault("escalated", False)
         dq.append(row)
