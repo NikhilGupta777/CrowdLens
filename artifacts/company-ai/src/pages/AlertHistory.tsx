@@ -278,7 +278,9 @@ export default function AlertHistory() {
             Alert History
           </h1>
           <p style={{ color: "var(--app-text-muted)", fontSize: isMobile ? 11 : 13 }}>
-            {alerts.length} total events recorded
+            {filter === "all" && !q
+              ? `${alerts.length} total events recorded`
+              : `${filtered.length} shown · ${alerts.length} total · exports use filtered list`}
           </p>
         </div>
 
@@ -300,6 +302,7 @@ export default function AlertHistory() {
 
           <button
             onClick={() => exportCSV(filtered)}
+            title={`Export ${filtered.length} filtered events as CSV (current filter applied)`}
             style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "7px 12px", borderRadius: 8,
@@ -309,11 +312,12 @@ export default function AlertHistory() {
             }}
           >
             <Download size={13} />
-            {!isMobile && "CSV"}
+            {!isMobile && `CSV (${filtered.length})`}
           </button>
 
           <button
             onClick={() => exportJSON(filtered)}
+            title={`Export ${filtered.length} filtered events as JSON (current filter applied)`}
             style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "7px 12px", borderRadius: 8,
@@ -323,7 +327,7 @@ export default function AlertHistory() {
             }}
           >
             <Download size={13} />
-            {!isMobile && "JSON"}
+            {!isMobile && `JSON (${filtered.length})`}
           </button>
 
           <button

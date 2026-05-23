@@ -59,14 +59,98 @@ function TabButton({
   );
 }
 
+// ── persistence helpers ─────────────────────────────────────────────────────
+//
+// AI reports and chat history are persisted in localStorage so they survive
+// navigation between tabs (Settings, Dashboard, etc.) and full page reloads.
+// Without this, generating a 5-second incident report and then clicking
+// "Settings" wiped the report from memory; the user had to regenerate
+// (and re-pay the Gemini cost) just to read it again.
+//
+// Storage shape is wrapped with `v: 1` so a future schema change can
+// detect old payloads and migrate cleanly. Reports keyed by alert.id;
+// chat is one rolling list.
+const REPORTS_STORAGE_KEY = "crowdlens_ai_reports";
+const CHAT_STORAGE_KEY = "crowdlens_ai_chat";
+const REPORTS_RETENTION = 200;     // cap stored reports to keep localStorage small
+const CHAT_RETENTION = 100;        // cap stored chat messages
+
+interface ReportsBlob { v: 1; reports: Record<number, string> }
+interface ChatBlob    { v: 1; messages: ChatMessage[] }
+
+function loadReports(): Record<number, string> {
+  try {
+    const raw = localStorage.getItem(REPORTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as ReportsBlob | Record<number, string>;
+    // Backwards compat: pre-versioning blob was a flat record.
+    if (parsed && typeof parsed === "object" && "v" in parsed && parsed.v === 1) {
+      return parsed.reports ?? {};
+    }
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<number, string>;
+    }
+  } catch {
+    // Corrupt JSON — drop and start fresh
+  }
+  return {};
+}
+
+function saveReports(reports: Record<number, string>) {
+  try {
+    // Trim to retention cap before saving (oldest by alert id removed).
+    const ids = Object.keys(reports).map(Number).sort((a, b) => b - a);
+    const trimmed: Record<number, string> = {};
+    for (const id of ids.slice(0, REPORTS_RETENTION)) {
+      trimmed[id] = reports[id];
+    }
+    const blob: ReportsBlob = { v: 1, reports: trimmed };
+    localStorage.setItem(REPORTS_STORAGE_KEY, JSON.stringify(blob));
+  } catch {
+    // QuotaExceededError or storage disabled — silently skip persistence
+  }
+}
+
+function loadChat(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ChatBlob | ChatMessage[];
+    if (Array.isArray(parsed)) return parsed; // legacy flat array
+    if (parsed && typeof parsed === "object" && "v" in parsed && parsed.v === 1) {
+      return parsed.messages ?? [];
+    }
+  } catch {
+    // Corrupt JSON
+  }
+  return [];
+}
+
+function saveChat(messages: ChatMessage[]) {
+  try {
+    const trimmed = messages.slice(-CHAT_RETENTION);
+    const blob: ChatBlob = { v: 1, messages: trimmed };
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(blob));
+  } catch {
+    // ignore
+  }
+}
+
 // ── REPORTS TAB ──────────────────────────────────────────────────────────────
 
 function ReportsTab() {
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [reports, setReports] = useState<Record<number, string>>({});
+  // Hydrate from localStorage so reports survive tab navigation + reloads.
+  // The backend doesn't store reports — they live only in the browser.
+  const [reports, setReports] = useState<Record<number, string>>(() => loadReports());
   const [generating, setGenerating] = useState<Record<number, boolean>>({});
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+
+  // Persist whenever reports map changes
+  useEffect(() => {
+    saveReports(reports);
+  }, [reports]);
 
   useEffect(() => {
     fetch("/api/alerts/history?limit=30")
@@ -219,11 +303,18 @@ function ReportsTab() {
 // ── CHAT TAB ─────────────────────────────────────────────────────────────────
 
 function ChatTab() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Hydrate from localStorage so chat history survives navigation + reload.
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadChat());
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [alertHistory, setAlertHistory] = useState<AlertRecord[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Persist messages whenever they change. Saved blob is capped at the
+  // last CHAT_RETENTION items to keep localStorage size bounded.
+  useEffect(() => {
+    saveChat(messages);
+  }, [messages]);
 
   useEffect(() => {
     const fetchHistory = () => {
@@ -411,6 +502,23 @@ function ChatTab() {
             outline: "none",
           }}
         />
+        {messages.length > 0 && !streaming && (
+          <button
+            onClick={() => {
+              if (confirm("Clear all chat history? This cannot be undone.")) {
+                setMessages([]);
+              }
+            }}
+            title="Clear chat history"
+            style={{
+              padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(239,68,68,0.3)",
+              background: "rgba(239,68,68,0.08)", color: "#ef4444",
+              cursor: "pointer", fontSize: 12, fontWeight: 600,
+            }}
+          >
+            Clear
+          </button>
+        )}
         <button
           onClick={sendMessage}
           disabled={!input.trim() || streaming}
