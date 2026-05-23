@@ -59,6 +59,7 @@ interface Config {
   loitering_enabled: boolean;
   loitering_time_threshold: number;
   loitering_radius_px: number;
+  alert_escalation_secs: number;
 }
 
 // Defaults match backend/config.py exactly. Mismatches previously caused the
@@ -93,6 +94,7 @@ const DEFAULT_CONFIG: Config = {
   loitering_enabled: true,
   loitering_time_threshold: 15,
   loitering_radius_px: 180,
+  alert_escalation_secs: 60,
 };
 
 const COCO_CLASSES = [
@@ -1332,7 +1334,20 @@ export default function Settings() {
           min={1}
           max={60}
           step={1}
-          onChange={(v) => setConfig((c) => ({ ...c, alert_cooldown_secs: v }))}
+          onChange={(v) => { markUserEdit(); setConfig((c) => ({ ...c, alert_cooldown_secs: v })); }}
+          unit=" s"
+        />
+
+        <PremiumSlider
+          label="Alert Escalation Timeout"
+          description="If an alert is not acknowledged within this many seconds it is flagged as ESCALATED and a follow-up email is sent. Set to 0 to disable escalation."
+          icon={CheckCircle}
+          color="#f59e0b"
+          value={config.alert_escalation_secs}
+          min={0}
+          max={600}
+          step={10}
+          onChange={(v) => { markUserEdit(); setConfig((c) => ({ ...c, alert_escalation_secs: v })); }}
           unit=" s"
         />
       </div>

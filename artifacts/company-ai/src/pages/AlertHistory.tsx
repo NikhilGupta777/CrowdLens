@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, BarChart2, Camera, Clock, Download, Filter, Package, RefreshCw, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap } from "lucide-react";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import { AlertCircle, BarChart2, Camera, CheckCheck, Clock, Download, Filter, Package, RefreshCw, Search, ShieldAlert, Trash2, UserRoundX, Users, Zap } from "lucide-react";
 import { useIsMobile } from "../hooks/use-mobile";
 import { AlertRecord } from "../types";
 import {
@@ -28,6 +28,7 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
 
 const FILTER_OPTIONS = [
   "all",
+  "unacked",
   "running",
   "fight_suspected",
   "unattended_object",
@@ -205,6 +206,8 @@ export default function AlertHistory() {
   const [clearing, setClearing] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const [showChart, setShowChart] = useState(!isMobile);
+  const [ackingId, setAckingId] = useState<number | null>(null);
+  const [ackingAll, setAckingAll] = useState(false);
 
   const fetchHistory = async (showRefreshing = false) => {
     if (showRefreshing) setRefreshing(true);
@@ -240,9 +243,48 @@ export default function AlertHistory() {
     }
   };
 
+  const ackAlert = useCallback(async (alertId: number) => {
+    setAckingId(alertId);
+    try {
+      const res = await fetch(`/api/alerts/${alertId}/ack`, { method: "POST" });
+      if (res.ok) {
+        setAlerts((prev) =>
+          prev.map((a) =>
+            a.id === alertId
+              ? { ...a, acked: 1 as const, acked_at: Date.now() / 1000, escalated: false }
+              : a
+          )
+        );
+      }
+    } finally {
+      setAckingId(null);
+    }
+  }, []);
+
+  const ackAll = useCallback(async () => {
+    setAckingAll(true);
+    try {
+      const res = await fetch("/api/alerts/ack-all", { method: "POST" });
+      if (res.ok) {
+        const now = Date.now() / 1000;
+        setAlerts((prev) =>
+          prev.map((a) =>
+            a.acked ? a : { ...a, acked: 1 as const, acked_at: now, escalated: false }
+          )
+        );
+      }
+    } finally {
+      setAckingAll(false);
+    }
+  }, []);
+
   const q = searchQuery.trim().toLowerCase();
   const filtered = alerts.filter((record) => {
-    if (filter !== "all" && record.anomaly.type !== filter) return false;
+    if (filter === "unacked") {
+      if (record.acked) return false;
+    } else if (filter !== "all" && record.anomaly.type !== filter) {
+      return false;
+    }
     if (!q) return true;
     const meta = TYPE_META[record.anomaly.type];
     return (
@@ -254,6 +296,8 @@ export default function AlertHistory() {
       (record.source ?? "").toLowerCase().includes(q)
     );
   });
+
+  const unackedCount = alerts.filter((a) => !a.acked).length;
 
   const counts = alerts.reduce<Record<string, number>>((acc, record) => {
     acc[record.anomaly.type] = (acc[record.anomaly.type] || 0) + 1;
@@ -345,6 +389,25 @@ export default function AlertHistory() {
             <RefreshCw size={13} style={{ animation: refreshing ? "spin 0.8s linear infinite" : "none" }} />
             {!isMobile && "Refresh"}
           </button>
+
+          {unackedCount > 0 && (
+            <button
+              onClick={ackAll}
+              disabled={ackingAll}
+              title={`Acknowledge all ${unackedCount} unacked alert(s)`}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "7px 12px", borderRadius: 8,
+                border: "1px solid rgba(16,185,129,0.35)",
+                background: "rgba(16,185,129,0.08)",
+                color: "#10b981",
+                cursor: ackingAll ? "default" : "pointer", fontSize: 12,
+              }}
+            >
+              <CheckCheck size={13} />
+              {!isMobile && (ackingAll ? "Acking…" : `Ack All (${unackedCount})`)}
+            </button>
+          )}
 
           <button
             onClick={clearHistory}
@@ -492,6 +555,9 @@ export default function AlertHistory() {
         {FILTER_OPTIONS.map((option) => {
           const meta = TYPE_META[option as keyof typeof TYPE_META];
           const active = filter === option;
+          const isUnacked = option === "unacked";
+          const chipColor = isUnacked ? "#f59e0b" : (meta?.color ?? "#3b82f6");
+          const chipLabel = isUnacked ? `Unacked${unackedCount > 0 ? ` (${unackedCount})` : ""}` : (option === "all" ? "All Events" : meta?.label ?? option);
           return (
             <button
               key={option}
@@ -504,12 +570,12 @@ export default function AlertHistory() {
                 fontSize: 12,
                 fontWeight: 600,
                 transition: "all 0.18s",
-                borderColor: active ? (meta?.color ?? "#3b82f6") : "rgba(255,255,255,0.08)",
-                background: active ? `${meta?.color ?? "#3b82f6"}18` : "rgba(255,255,255,0.03)",
-                color: active ? (meta?.color ?? "#3b82f6") : "#64748b",
+                borderColor: active ? chipColor : "rgba(255,255,255,0.08)",
+                background: active ? `${chipColor}18` : "rgba(255,255,255,0.03)",
+                color: active ? chipColor : "#64748b",
               }}
             >
-              {option === "all" ? "All Events" : meta?.label ?? option}
+              {chipLabel}
             </button>
           );
         })}
@@ -529,7 +595,7 @@ export default function AlertHistory() {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "rgba(0,0,0,0.3)", color: "var(--app-text-muted)", fontSize: 9, letterSpacing: 1.5, fontWeight: 700 }}>
-              {["TIME", "TYPE", "SEVERITY", "DETAILS", "POSITION", "SOURCE", "EVIDENCE"].map((header) => (
+              {["TIME", "TYPE", "SEVERITY", "DETAILS", "POSITION", "SOURCE", "EVIDENCE", "ACK"].map((header) => (
                 <th key={header} style={{ padding: "12px 16px", textAlign: "left" }}>
                   {header}
                 </th>
@@ -539,11 +605,11 @@ export default function AlertHistory() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>Loading...</td>
+                <td colSpan={8} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>Loading...</td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>No incidents recorded</td>
+                <td colSpan={8} style={{ padding: 32, textAlign: "center", color: "var(--app-text-muted)" }}>No incidents recorded</td>
               </tr>
             ) : (
               filtered.map((record) => {
@@ -559,7 +625,11 @@ export default function AlertHistory() {
                   <tr
                     key={record.id}
                     className="alert-row"
-                    style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}
+                    style={{
+                      borderTop: "1px solid rgba(255,255,255,0.04)",
+                      opacity: record.acked ? 0.45 : 1,
+                      transition: "opacity 0.2s",
+                    }}
                   >
                     <td style={{ padding: "11px 16px", color: "var(--app-text-muted)", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>
                       {new Date(record.timestamp * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -570,6 +640,21 @@ export default function AlertHistory() {
                         <span style={{ background: `${meta.color}18`, color: meta.color, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>
                           {meta.label}
                         </span>
+                        {record.escalated && !record.acked && (
+                          <span style={{
+                            background: "rgba(239,68,68,0.15)",
+                            color: "#ef4444",
+                            border: "1px solid rgba(239,68,68,0.4)",
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            fontSize: 9,
+                            fontWeight: 800,
+                            letterSpacing: 0.8,
+                            animation: "pulse-ring 1.4s infinite",
+                          }}>
+                            ESCALATED
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td style={{ padding: "11px 16px" }}>
@@ -638,6 +723,36 @@ export default function AlertHistory() {
                         </a>
                       ) : (
                         <span style={{ color: "var(--app-text-muted)", fontSize: 11 }}>—</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 16px" }}>
+                      {record.acked ? (
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                          fontSize: 10, color: "#10b981", fontWeight: 700,
+                        }}>
+                          <CheckCheck size={12} />
+                          Acked
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => ackAlert(record.id)}
+                          disabled={ackingId === record.id}
+                          title="Acknowledge this alert"
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 5,
+                            padding: "4px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700,
+                            border: "1px solid rgba(16,185,129,0.35)",
+                            background: "rgba(16,185,129,0.08)",
+                            color: "#10b981",
+                            cursor: ackingId === record.id ? "default" : "pointer",
+                            opacity: ackingId === record.id ? 0.6 : 1,
+                            transition: "opacity 0.15s",
+                          }}
+                        >
+                          <CheckCheck size={11} />
+                          {ackingId === record.id ? "…" : "Ack"}
+                        </button>
                       )}
                     </td>
                   </tr>

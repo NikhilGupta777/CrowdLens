@@ -142,6 +142,12 @@ FIGHT_MIN_HIT_STREAK = 3
 # so fight detection has the same noise-robustness as running.
 FIGHT_RESET_GRACE_TIME = 0.4
 
+# ── Alert escalation ─────────────────────────────────────────────────────────
+# If an alert is not acknowledged within this many seconds it is flagged as
+# escalated (escalated=True in the alert entry) and a follow-up email is sent.
+# Set to 0 to disable escalation entirely.
+ALERT_ESCALATION_SECS = 60.0
+
 # ── Loitering detection ──────────────────────────────────────────────────────
 # A loiterer remains within a small region for an extended time. The radius
 # defines that region. Re-anchoring uses hysteresis (1.5× radius) so jitter

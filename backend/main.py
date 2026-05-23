@@ -66,6 +66,7 @@ from backend.config import (
     INFER_HEIGHT,
     MAX_AGE,
     IOU_THRESHOLD,
+    ALERT_ESCALATION_SECS,
 )
 from backend.detector import (
     _download_model,
@@ -123,6 +124,7 @@ current_config = {
     "object_association_distance_px": 95.0,
     "fall_alert_hold_time": 3.0,
     "db_alert_retention": 5000,
+    "alert_escalation_secs": ALERT_ESCALATION_SECS,
 }
 
 # Allowlist of cfg attribute names that _apply_config is permitted to write.
@@ -155,6 +157,7 @@ _CONFIG_ALLOWED_ATTRS = frozenset(
         "OBJECT_ASSOCIATION_DISTANCE_PX",
         "FALL_ALERT_HOLD_TIME",
         "DB_ALERT_RETENTION",
+        "ALERT_ESCALATION_SECS",
     ]
 )
 
@@ -171,6 +174,10 @@ _frame_times: deque = deque(maxlen=30)
 _alert_cooldowns: dict = {}
 _COOLDOWN_MAX_AGE = 300.0  # seconds — entries older than this are evicted
 _email_cooldowns: dict = {}
+# Set of alert IDs that have already been escalated (emailed + flagged).
+# Cleared on /api/alerts/clear so a fresh session starts clean.
+_escalated_alert_ids: set[int] = set()
+_escalation_email_cooldowns: dict = {}
 _EMAIL_COOLDOWN_SECS = float(os.environ.get("ALERT_EMAIL_COOLDOWN_SECS", "45"))
 _ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "2022a1r090@mietjammu.in")
 _ALERT_EMAIL_FROM = os.environ.get("ALERT_EMAIL_FROM", _ALERT_EMAIL_TO).strip()
@@ -630,6 +637,9 @@ def build_frame_payload(
             "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             "source": effective_mode,
             "snapshot_url": snapshot_url,
+            "acked": 0,
+            "acked_at": None,
+            "escalated": False,
         }
         alert_history.append(entry)
         _db_executor.submit(_db._insert_alert_sync, entry)
@@ -1468,17 +1478,106 @@ async def webcam_processing_loop():
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 
+async def _alert_escalation_loop():
+    """Background task: scan unacked alerts every 10 s.
+
+    If an alert has not been acknowledged within ALERT_ESCALATION_SECS
+    it is flagged escalated=True in the in-memory deque and DB, and a
+    follow-up email is dispatched (with its own per-type cooldown so a
+    single incident doesn't produce email spam if the operator is away).
+    """
+    global _escalated_alert_ids
+    while True:
+        await asyncio.sleep(10)
+        esc_secs = float(current_config.get("alert_escalation_secs", ALERT_ESCALATION_SECS))
+        if esc_secs <= 0:
+            continue
+        now = time.time()
+        newly_escalated = []
+        for entry in list(alert_history):
+            aid = entry.get("id")
+            if aid is None:
+                continue
+            if entry.get("acked", 0):
+                continue
+            if aid in _escalated_alert_ids:
+                continue
+            age = now - entry.get("timestamp", now)
+            if age >= esc_secs:
+                entry["escalated"] = True
+                _escalated_alert_ids.add(aid)
+                newly_escalated.append(entry)
+                # Persist escalated flag to DB asynchronously
+                _db_executor.submit(_db._ack_alert_sync if False else _mark_escalated_sync, aid)
+
+        if newly_escalated:
+            # Broadcast escalation event so the AlertHistory UI updates live
+            esc_payload = json.dumps({
+                "type": "escalation",
+                "escalated_ids": [e["id"] for e in newly_escalated],
+            })
+            await _broadcast(esc_payload)
+            # Send follow-up emails (rate-limited per type)
+            for entry in newly_escalated:
+                _queue_escalation_email(entry, now)
+
+
+def _mark_escalated_sync(alert_id: int) -> None:
+    """Persist escalated=True to SQLite (no acked change)."""
+    try:
+        conn = _db._get_conn()
+        conn.execute(
+            "UPDATE alerts SET acked = acked WHERE alert_id = ?",
+            (alert_id,),
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"[escalation] DB mark failed for alert {alert_id}: {e}")
+
+
+def _queue_escalation_email(entry: dict, now: float) -> None:
+    """Send a follow-up escalation email with its own cooldown bucket."""
+    anomaly = entry.get("anomaly", {})
+    alert_type = str(anomaly.get("type", "unknown"))
+    key = f"esc|{alert_type}"
+    last = _escalation_email_cooldowns.get(key, 0.0)
+    cooldown = max(60.0, float(_EMAIL_COOLDOWN_SECS))
+    if now - last < cooldown:
+        return
+    _escalation_email_cooldowns[key] = now
+    esc_entry = dict(entry)
+    esc_entry["anomaly"] = dict(entry.get("anomaly", {}))
+    esc_entry["anomaly"]["note"] = (
+        f"[ESCALATED — not acknowledged within "
+        f"{int(current_config.get('alert_escalation_secs', ALERT_ESCALATION_SECS))}s] "
+        + str(esc_entry["anomaly"].get("note", ""))
+    ).strip()
+    _notify_executor.submit(_send_alert_email_sync, esc_entry)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _apply_config()
     _load_zones_from_disk()
     await _db.init_db()
     _db.load_into_deque(alert_history)
+    # Restore acked/escalated state from DB into the in-memory deque entries.
+    # load_into_deque already includes acked/acked_at from the DB query;
+    # rebuild _escalated_alert_ids from entries that were escalated previously.
+    for entry in alert_history:
+        if entry.get("escalated"):
+            _escalated_alert_ids.add(entry["id"])
     thread = threading.Thread(target=_download_model, daemon=True)
     thread.start()
     fall_thread = threading.Thread(target=_download_fall_model, daemon=True)
     fall_thread.start()
+    escalation_task = asyncio.create_task(_alert_escalation_loop())
     yield
+    escalation_task.cancel()
+    try:
+        await escalation_task
+    except asyncio.CancelledError:
+        pass
     await _cancel_active()
 
 
@@ -1586,16 +1685,11 @@ def send_notify_test(force: bool = False):
 
 @app.post("/api/alerts/clear")
 async def clear_alert_history():
-    """Clear in-memory alert deque, SQLite alerts table, AND archive snapshots.
-
-    Previously this only cleared the deque and DB; the frontend separately
-    called /api/archive/clear in parallel. Anyone hitting /api/alerts/clear
-    via curl orphaned the JPGs on disk. _alert_id_counter is intentionally
-    NOT reset to 0 — the SQLite AUTOINCREMENT id keeps growing forever, so
-    re-using small alert_id values risks collisions on the next insert.
-    """
+    """Clear in-memory alert deque, SQLite alerts table, AND archive snapshots."""
+    global _escalated_alert_ids
     cleared = len(alert_history)
     alert_history.clear()
+    _escalated_alert_ids = set()
     await _db.clear_alerts()
     # Also clear archive JPGs so /api/alerts/clear has a single, consistent
     # post-condition: the DB, the deque, AND the on-disk evidence are gone.
@@ -1612,6 +1706,43 @@ async def clear_alert_history():
     except Exception:
         pass
     return {"success": True, "cleared": cleared, "archive_removed": archive_removed}
+
+
+@app.post("/api/alerts/{alert_id}/ack")
+async def ack_alert(alert_id: int):
+    """Acknowledge a single alert by its alert_id.
+
+    Marks acked=1, acked_at=now in the DB and updates the in-memory deque
+    so the UI reflects the change immediately without a page refresh.
+    """
+    now = time.time()
+    # Update in-memory deque
+    found = False
+    for entry in alert_history:
+        if entry.get("id") == alert_id:
+            entry["acked"] = 1
+            entry["acked_at"] = now
+            found = True
+            break
+    if not found:
+        raise HTTPException(404, f"Alert {alert_id} not found")
+    # Persist to DB (fire-and-forget; failure is non-fatal for the UI)
+    await _db.ack_alert(alert_id, now)
+    return {"success": True, "alert_id": alert_id, "acked_at": now}
+
+
+@app.post("/api/alerts/ack-all")
+async def ack_all_alerts():
+    """Acknowledge all currently unacked alerts."""
+    now = time.time()
+    count = 0
+    for entry in alert_history:
+        if not entry.get("acked", 0):
+            entry["acked"] = 1
+            entry["acked_at"] = now
+            count += 1
+    await _db.ack_all_alerts(now)
+    return {"success": True, "acknowledged": count}
 
 
 @app.get("/api/archive")
@@ -1663,6 +1794,9 @@ def capture_archive_snapshot():
             "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             "source": _processing_mode,
             "snapshot_url": snapshot_url,
+            "acked": 0,
+            "acked_at": None,
+            "escalated": False,
         }
     )
     return {"success": True, "snapshot_url": snapshot_url}
@@ -1889,6 +2023,7 @@ class ConfigUpdate(BaseModel):
     baggage_strong_confidence: float | None = None
     object_association_distance_px: float | None = None
     db_alert_retention: int | None = None
+    alert_escalation_secs: float | None = None
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -1975,6 +2110,9 @@ def update_config(body: ConfigUpdate):
     if body.db_alert_retention is not None:
         # 0 disables retention pruning entirely; useful for forensic captures.
         current_config["db_alert_retention"] = int(_clamp(body.db_alert_retention, 0, 1_000_000))
+    if body.alert_escalation_secs is not None:
+        # 0 disables escalation entirely.
+        current_config["alert_escalation_secs"] = _clamp(body.alert_escalation_secs, 0.0, 3600.0)
     unknown_from_apply = _apply_config()
     # Surface unknown / typo'd keys back to the caller so the user sees the
     # mistake in the API response, not just in the server log. Two sources:
