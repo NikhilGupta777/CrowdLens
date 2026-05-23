@@ -119,6 +119,14 @@ connected_clients: set[WebSocket] = set()
 _WS_MAX_MSG_BYTES = 1 * 1024 * 1024  # 1 MB cap per WebSocket message
 _ALERT_COOLDOWN_SECS = 5.0
 
+# Informational detection types: still recorded to the alert log / history so
+# the operator can review them, but they are NOT security incidents. Face and
+# plate detections fire on virtually every frame, so emailing or escalating
+# them would bury genuine safety alerts (falls, fights, restricted-zone,
+# PPE violations) and spam the operator's inbox. Manual snapshots are operator
+# actions, not incidents, so they should not escalate either.
+_INFO_ALERT_TYPES = {"face_detected", "lpr_detected", "manual_snapshot"}
+
 current_config = {
     "overcrowding_threshold": OVERCROWDING_THRESHOLD,
     "running_speed_threshold": RUNNING_SPEED_THRESHOLD,
@@ -460,7 +468,7 @@ def _send_alert_email_sync(entry: dict) -> None:
         return
     anomaly = entry.get("anomaly", {})
     alert_type = str(anomaly.get("type", "alert")).replace("_", " ").title()
-    severity = "HIGH" if anomaly.get("type") in {"fall_detected", "fight_suspected", "restricted_zone"} else "MEDIUM"
+    severity = "HIGH" if anomaly.get("type") in {"fall_detected", "fight_suspected", "restricted_zone", "ppe_violation"} else "MEDIUM"
     subject = f"[CrowdLens Campus Alert] {alert_type} - {severity}"
     position = anomaly.get("position")
     details = []
@@ -548,6 +556,10 @@ def _send_alert_email_sync(entry: dict) -> None:
 
 
 def _queue_alert_email(entry: dict, now: float) -> None:
+    atype = str(entry.get("anomaly", {}).get("type", ""))
+    if atype in _INFO_ALERT_TYPES:
+        # Informational detections never trigger email notifications.
+        return
     if not _should_send_email(entry, now):
         return
     _notify_executor.submit(_send_alert_email_sync, entry)
@@ -894,7 +906,7 @@ def _build_extra_anomalies(extra: dict, frame_width: int, frame_height: int) -> 
     # PPE violations: only "NO-Hardhat" detections trigger an alert
     for det in extra.get("ppe", []):
         label = det.get("label", "")
-        if "no" in label.lower() or "no-" in label.lower():
+        if "no" in label.lower():
             x1, y1, x2, y2 = det["bbox"]
             sx1 = int(x1 * scale_x)
             sy1 = int(y1 * scale_y)
@@ -1651,6 +1663,10 @@ async def _alert_escalation_loop():
                 continue
             if entry.get("acked", 0):
                 continue
+            if str(entry.get("anomaly", {}).get("type", "")) in _INFO_ALERT_TYPES:
+                # Informational detections (faces, plates, manual snapshots)
+                # are not incidents and must never escalate.
+                continue
             if aid in _escalated_alert_ids:
                 continue
             age = now - entry.get("timestamp", now)
@@ -1659,7 +1675,7 @@ async def _alert_escalation_loop():
                 _escalated_alert_ids.add(aid)
                 newly_escalated.append(entry)
                 # Persist escalated flag to DB asynchronously
-                _db_executor.submit(_db._ack_alert_sync if False else _mark_escalated_sync, aid)
+                _db_executor.submit(_mark_escalated_sync, aid)
 
         if newly_escalated:
             # Broadcast escalation event so the AlertHistory UI updates live
@@ -1674,11 +1690,11 @@ async def _alert_escalation_loop():
 
 
 def _mark_escalated_sync(alert_id: int) -> None:
-    """Persist escalated=True to SQLite (no acked change)."""
+    """Persist escalated=1 to SQLite (no acked change)."""
     try:
         conn = _db._get_conn()
         conn.execute(
-            "UPDATE alerts SET acked = acked WHERE alert_id = ?",
+            "UPDATE alerts SET escalated = 1 WHERE alert_id = ?",
             (alert_id,),
         )
         conn.commit()
