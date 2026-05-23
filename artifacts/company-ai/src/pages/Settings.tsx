@@ -103,13 +103,13 @@ const DEFAULT_CONFIG: Config = {
   loitering_time_threshold: 15,
   loitering_radius_px: 180,
   alert_escalation_secs: 60,
-  // Phase 5 — PPE / Face / LPR
-  ppe_detection_enabled: true,
+  // Phase 5 — PPE / Face / LPR (opt-in extras, off by default)
+  ppe_detection_enabled: false,
   ppe_confidence_threshold: 0.40,
-  face_detection_enabled: true,
+  face_detection_enabled: false,
   face_scale_factor: 1.3,
   face_min_neighbors: 5,
-  lpr_detection_enabled: true,
+  lpr_detection_enabled: false,
   lpr_confidence_threshold: 0.40,
 };
 
