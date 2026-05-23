@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, ReactNode } from "react";
+import { useEffect, useRef, useState, useCallback, ReactNode } from "react";
 import { OverlayStyle } from "../components/SimulationCanvas";
 import { useIsMobile } from "../hooks/use-mobile";
 import {
@@ -367,6 +367,436 @@ const OVERLAY_OPTIONS: {
   },
 ];
 
+// ── Canvas dimensions (half the canonical 1280×720 space) ──────────────────
+const CANVAS_W = 640;
+const CANVAS_H = 360;
+const SCALE = 0.5; // canvas px = canonical px * SCALE
+
+/** Convert canonical coords → canvas coords */
+const toCanvas = (v: number) => v * SCALE;
+/** Convert canvas coords → canonical coords */
+const toCanonical = (v: number) => Math.round(v / SCALE);
+
+const ZONE_COLORS = [
+  "#eab308", "#f97316", "#3b82f6", "#10b981",
+  "#a855f7", "#f43f5e", "#06b6d4", "#84cc16",
+];
+
+function getZoneColor(idx: number) {
+  return ZONE_COLORS[idx % ZONE_COLORS.length];
+}
+
+// ── Rect handle positions: 8 handles around the rect ──────────────────────
+type RectHandle = "tl" | "tm" | "tr" | "ml" | "mr" | "bl" | "bm" | "br" | "body";
+function getRectHandles(z: ZoneRect): Record<RectHandle, [number, number]> {
+  const x1 = toCanvas(z.x1), y1 = toCanvas(z.y1);
+  const x2 = toCanvas(z.x2), y2 = toCanvas(z.y2);
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  return {
+    tl: [x1, y1], tm: [mx, y1], tr: [x2, y1],
+    ml: [x1, my],               mr: [x2, my],
+    bl: [x1, y2], bm: [mx, y2], br: [x2, y2],
+    body: [mx, my],
+  };
+}
+
+interface ZoneCanvasProps {
+  zones: Zone[];
+  onUpdateZone: (zone: Zone) => void;
+}
+
+function ZoneCanvas({ zones, onUpdateZone }: ZoneCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Drag state stored in a ref so it doesn't trigger re-renders on every mouse-move
+  const dragRef = useRef<{
+    zoneId: string;
+    type: "rectHandle" | "polyVertex" | "body";
+    handle?: RectHandle;
+    vertexIdx?: number;
+    startCanvasX: number;
+    startCanvasY: number;
+    startZone: Zone;
+  } | null>(null);
+
+  // ── Draw ────────────────────────────────────────────────────────────────
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+    // Background
+    ctx.fillStyle = "rgba(6,10,18,0.95)";
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+    // Grid
+    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= CANVAS_W; x += 40) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_H); ctx.stroke();
+    }
+    for (let y = 0; y <= CANVAS_H; y += 40) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CANVAS_W, y); ctx.stroke();
+    }
+
+    zones.forEach((zone, idx) => {
+      const color = getZoneColor(idx);
+      if (zone.shape === "rect") {
+        const x1 = toCanvas(zone.x1), y1 = toCanvas(zone.y1);
+        const w = toCanvas(zone.x2) - x1, h = toCanvas(zone.y2) - y1;
+        // Fill
+        ctx.fillStyle = color + "22";
+        ctx.fillRect(x1, y1, w, h);
+        // Border
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.strokeRect(x1, y1, w, h);
+        // Handles
+        const handles = getRectHandles(zone);
+        (Object.entries(handles) as [RectHandle, [number, number]][]).forEach(([key, [hx, hy]]) => {
+          if (key === "body") return;
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+          ctx.fill(); ctx.stroke();
+        });
+        // Label
+        ctx.fillStyle = color;
+        ctx.font = "bold 11px monospace";
+        ctx.fillText(zone.name, x1 + 6, y1 + 14);
+      } else {
+        // Polygon
+        const pts = zone.points.map(([px, py]) => [toCanvas(px), toCanvas(py)] as [number, number]);
+        if (pts.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+        ctx.fillStyle = color + "22";
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.stroke();
+        // Vertex dots
+        pts.forEach(([vx, vy]) => {
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(vx, vy, 5, 0, Math.PI * 2);
+          ctx.fill(); ctx.stroke();
+        });
+        // Label (near centroid)
+        const cx = pts.reduce((s, [x]) => s + x, 0) / pts.length;
+        const cy = pts.reduce((s, [, y]) => s + y, 0) / pts.length;
+        ctx.fillStyle = color;
+        ctx.font = "bold 11px monospace";
+        ctx.fillText(zone.name, cx - 20, cy + 4);
+      }
+    });
+  }, [zones]);
+
+  useEffect(() => { draw(); }, [draw]);
+
+  // ── Mouse helpers ────────────────────────────────────────────────────────
+  const getCanvasPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const hitRadius = 8;
+
+  const findHit = useCallback((cx: number, cy: number): typeof dragRef.current => {
+    // Test in reverse order (topmost zone drawn last gets priority)
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const zone = zones[i];
+      if (zone.shape === "rect") {
+        const handles = getRectHandles(zone);
+        for (const [key, [hx, hy]] of Object.entries(handles) as [RectHandle, [number, number]][]) {
+          if (key === "body") continue;
+          if (Math.hypot(cx - hx, cy - hy) <= hitRadius) {
+            return { zoneId: zone.id, type: "rectHandle", handle: key as RectHandle, startCanvasX: cx, startCanvasY: cy, startZone: zone };
+          }
+        }
+        // Body hit (inside rect)
+        const x1c = toCanvas(zone.x1), y1c = toCanvas(zone.y1);
+        const x2c = toCanvas(zone.x2), y2c = toCanvas(zone.y2);
+        if (cx >= x1c && cx <= x2c && cy >= y1c && cy <= y2c) {
+          return { zoneId: zone.id, type: "body", startCanvasX: cx, startCanvasY: cy, startZone: zone };
+        }
+      } else {
+        const pts = zone.points.map(([px, py]) => [toCanvas(px), toCanvas(py)] as [number, number]);
+        // Vertex hit
+        for (let v = 0; v < pts.length; v++) {
+          if (Math.hypot(cx - pts[v][0], cy - pts[v][1]) <= hitRadius) {
+            return { zoneId: zone.id, type: "polyVertex", vertexIdx: v, startCanvasX: cx, startCanvasY: cy, startZone: zone };
+          }
+        }
+        // Body hit (point in polygon)
+        if (isPointInPolygon(cx, cy, pts)) {
+          return { zoneId: zone.id, type: "body", startCanvasX: cx, startCanvasY: cy, startZone: zone };
+        }
+      }
+    }
+    return null;
+  }, [zones]);
+
+  const onMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+    const { x, y } = getCanvasPos(e);
+    dragRef.current = findHit(x, y);
+  }, [findHit]);
+
+  const onMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const { x, y } = getCanvasPos(e);
+    const dx = x - drag.startCanvasX;
+    const dy = y - drag.startCanvasY;
+    const sz = drag.startZone;
+
+    if (sz.shape === "rect") {
+      let nx1 = sz.x1, ny1 = sz.y1, nx2 = sz.x2, ny2 = sz.y2;
+      const cdx = toCanonical(dx), cdy = toCanonical(dy);
+      if (drag.type === "body") {
+        nx1 = clampC(sz.x1 + cdx, 0, 1280); nx2 = clampC(sz.x2 + cdx, 0, 1280);
+        ny1 = clampC(sz.y1 + cdy, 0, 720);  ny2 = clampC(sz.y2 + cdy, 0, 720);
+      } else {
+        const h = drag.handle!;
+        if (h.includes("l")) nx1 = clampC(sz.x1 + cdx, 0, sz.x2 - 4);
+        if (h.includes("r")) nx2 = clampC(sz.x2 + cdx, sz.x1 + 4, 1280);
+        if (h.includes("t")) ny1 = clampC(sz.y1 + cdy, 0, sz.y2 - 4);
+        if (h.includes("b")) ny2 = clampC(sz.y2 + cdy, sz.y1 + 4, 720);
+      }
+      const updated: ZoneRect = { ...sz, x1: nx1, y1: ny1, x2: nx2, y2: ny2 };
+      // Optimistic update for smooth visual feedback (deferred API call on mouseUp)
+      // We update the parent via a synthetic zone state in onUpdateZone—
+      // but to avoid hammering the API, we store the live zone locally
+      // and only persist on mouseUp. Use a canvas-only preview here:
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d")!;
+      const color = getZoneColor(zones.findIndex(z => z.id === sz.id));
+      // Re-draw with live preview
+      drawPreview(ctx, zones, sz.id, updated);
+    } else if (sz.shape === "polygon") {
+      const pts = sz.points.map(([px, py]) => [px, py] as [number, number]);
+      if (drag.type === "polyVertex" && drag.vertexIdx !== undefined) {
+        pts[drag.vertexIdx] = [
+          clampC(sz.points[drag.vertexIdx][0] + toCanonical(dx), 0, 1280),
+          clampC(sz.points[drag.vertexIdx][1] + toCanonical(dy), 0, 720),
+        ];
+      } else if (drag.type === "body") {
+        const cdx = toCanonical(dx), cdy = toCanonical(dy);
+        for (let i = 0; i < pts.length; i++) {
+          pts[i] = [clampC(sz.points[i][0] + cdx, 0, 1280), clampC(sz.points[i][1] + cdy, 0, 720)];
+        }
+      }
+      const updated: ZonePolygon = { ...sz, points: pts };
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d")!;
+      drawPreview(ctx, zones, sz.id, updated);
+    }
+  }, [zones]);
+
+  const onMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    const { x, y } = getCanvasPos(e);
+    const dx = x - drag.startCanvasX;
+    const dy = y - drag.startCanvasY;
+    const sz = drag.startZone;
+
+    if (Math.hypot(dx, dy) < 2) return; // no movement — not a drag
+
+    if (sz.shape === "rect") {
+      let nx1 = sz.x1, ny1 = sz.y1, nx2 = sz.x2, ny2 = sz.y2;
+      const cdx = toCanonical(dx), cdy = toCanonical(dy);
+      if (drag.type === "body") {
+        nx1 = clampC(sz.x1 + cdx, 0, 1280); nx2 = clampC(sz.x2 + cdx, 0, 1280);
+        ny1 = clampC(sz.y1 + cdy, 0, 720);  ny2 = clampC(sz.y2 + cdy, 0, 720);
+      } else {
+        const h = drag.handle!;
+        if (h.includes("l")) nx1 = clampC(sz.x1 + cdx, 0, sz.x2 - 4);
+        if (h.includes("r")) nx2 = clampC(sz.x2 + cdx, sz.x1 + 4, 1280);
+        if (h.includes("t")) ny1 = clampC(sz.y1 + cdy, 0, sz.y2 - 4);
+        if (h.includes("b")) ny2 = clampC(sz.y2 + cdy, sz.y1 + 4, 720);
+      }
+      onUpdateZone({ ...sz, x1: nx1, y1: ny1, x2: nx2, y2: ny2 });
+    } else if (sz.shape === "polygon") {
+      const pts = sz.points.map(([px, py]) => [px, py] as [number, number]);
+      if (drag.type === "polyVertex" && drag.vertexIdx !== undefined) {
+        pts[drag.vertexIdx] = [
+          clampC(sz.points[drag.vertexIdx][0] + toCanonical(dx), 0, 1280),
+          clampC(sz.points[drag.vertexIdx][1] + toCanonical(dy), 0, 720),
+        ];
+      } else if (drag.type === "body") {
+        const cdx = toCanonical(dx), cdy = toCanonical(dy);
+        for (let i = 0; i < pts.length; i++) {
+          pts[i] = [clampC(sz.points[i][0] + cdx, 0, 1280), clampC(sz.points[i][1] + cdy, 0, 720)];
+        }
+      }
+      onUpdateZone({ ...sz, points: pts });
+    }
+  }, [zones, onUpdateZone]);
+
+  // Double-click on polygon vertex → delete it
+  const onDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const { x, y } = getCanvasPos(e);
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const zone = zones[i];
+      if (zone.shape !== "polygon") continue;
+      const pts = zone.points.map(([px, py]) => [toCanvas(px), toCanvas(py)] as [number, number]);
+      for (let v = 0; v < pts.length; v++) {
+        if (Math.hypot(x - pts[v][0], y - pts[v][1]) <= hitRadius + 2) {
+          if (pts.length <= 3) return; // minimum 3 vertices
+          const newPts = zone.points.filter((_, idx) => idx !== v);
+          onUpdateZone({ ...zone, points: newPts });
+          return;
+        }
+      }
+    }
+  }, [zones, onUpdateZone]);
+
+  // Right-click on polygon edge → insert vertex
+  const onContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const { x, y } = getCanvasPos(e);
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const zone = zones[i];
+      if (zone.shape !== "polygon") continue;
+      const pts = zone.points.map(([px, py]) => [toCanvas(px), toCanvas(py)] as [number, number]);
+      // Find closest edge
+      let bestDist = 12;
+      let bestIdx = -1;
+      for (let v = 0; v < pts.length; v++) {
+        const next = (v + 1) % pts.length;
+        const dist = distToSegment(x, y, pts[v][0], pts[v][1], pts[next][0], pts[next][1]);
+        if (dist < bestDist) { bestDist = dist; bestIdx = v; }
+      }
+      if (bestIdx >= 0) {
+        const newPts = [...zone.points];
+        newPts.splice(bestIdx + 1, 0, [toCanonical(x), toCanonical(y)]);
+        onUpdateZone({ ...zone, points: newPts });
+        return;
+      }
+    }
+  }, [zones, onUpdateZone]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_W}
+        height={CANVAS_H}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={() => { dragRef.current = null; }}
+        onDoubleClick={onDoubleClick}
+        onContextMenu={onContextMenu}
+        style={{
+          width: "100%",
+          height: "auto",
+          borderRadius: 10,
+          cursor: "crosshair",
+          border: "1px solid rgba(234,179,8,0.25)",
+          display: "block",
+          userSelect: "none",
+        }}
+      />
+      <div style={{ fontSize: 10, color: "#475569", marginTop: 8, lineHeight: 1.6 }}>
+        <strong style={{ color: "#94a3b8" }}>Rect zones:</strong> drag corners/edges to resize · drag body to move ·{" "}
+        <strong style={{ color: "#94a3b8" }}>Polygon zones:</strong> drag vertex dots to move · double-click vertex to delete · right-click edge to add vertex
+      </div>
+    </div>
+  );
+}
+
+// ── Canvas helpers ───────────────────────────────────────────────────────────
+
+function clampC(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function isPointInPolygon(px: number, py: number, pts: [number, number][]): boolean {
+  let inside = false;
+  let j = pts.length - 1;
+  for (let i = 0; i < pts.length; i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-9) + xi) {
+      inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
+}
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function drawPreview(ctx: CanvasRenderingContext2D, zones: Zone[], updatedId: string, updated: Zone): void {
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.fillStyle = "rgba(6,10,18,0.95)";
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= CANVAS_W; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CANVAS_H); ctx.stroke();
+  }
+  for (let y = 0; y <= CANVAS_H; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CANVAS_W, y); ctx.stroke();
+  }
+  zones.forEach((zone, idx) => {
+    const z = zone.id === updatedId ? updated : zone;
+    const color = getZoneColor(idx);
+    if (z.shape === "rect") {
+      const x1 = toCanvas(z.x1), y1 = toCanvas(z.y1);
+      const w = toCanvas(z.x2) - x1, h = toCanvas(z.y2) - y1;
+      ctx.fillStyle = color + "22"; ctx.fillRect(x1, y1, w, h);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+      ctx.strokeRect(x1, y1, w, h);
+      const handles = getRectHandles(z);
+      (Object.entries(handles) as [RectHandle, [number, number]][]).forEach(([key, [hx, hy]]) => {
+        if (key === "body") return;
+        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      });
+      ctx.fillStyle = color; ctx.font = "bold 11px monospace";
+      ctx.fillText(z.name, x1 + 6, y1 + 14);
+    } else {
+      const pts = z.points.map(([px, py]) => [toCanvas(px), toCanvas(py)] as [number, number]);
+      if (pts.length < 2) return;
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = color + "22"; ctx.fill();
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([]); ctx.stroke();
+      pts.forEach(([vx, vy]) => {
+        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(vx, vy, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      });
+      const cx = pts.reduce((s, [x]) => s + x, 0) / pts.length;
+      const cy = pts.reduce((s, [, y]) => s + y, 0) / pts.length;
+      ctx.fillStyle = color; ctx.font = "bold 11px monospace";
+      ctx.fillText(z.name, cx - 20, cy + 4);
+    }
+  });
+}
+
 export default function Settings() {
   const isMobile = useIsMobile();
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
@@ -474,6 +904,37 @@ export default function Settings() {
       await reloadZones();
     } catch (e) {
       setZoneError(e instanceof Error ? e.message : "Failed to add zone");
+    } finally {
+      setZoneSaving(false);
+    }
+  };
+
+  const addPolygonZone = async () => {
+    setZoneError(null);
+    setZoneSaving(true);
+    try {
+      // Default hexagon centred at 640,360 in canonical coords
+      const cx = 640, cy = 360, r = 150;
+      const pts: [number, number][] = Array.from({ length: 6 }, (_, i) => {
+        const angle = (Math.PI / 3) * i - Math.PI / 2;
+        return [Math.round(cx + r * Math.cos(angle)), Math.round(cy + r * Math.sin(angle))];
+      });
+      const res = await fetch("/api/zones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `Polygon ${zones.length + 1}`,
+          shape: "polygon",
+          points: pts,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Could not create polygon zone");
+      }
+      await reloadZones();
+    } catch (e) {
+      setZoneError(e instanceof Error ? e.message : "Failed to add polygon zone");
     } finally {
       setZoneSaving(false);
     }
@@ -1058,54 +1519,72 @@ export default function Settings() {
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700 }}>
-            RESTRICTED ZONES — RECTANGLE EDITOR
+            RESTRICTED ZONES — CANVAS EDITOR
           </div>
-          <button
-            onClick={addRectZone}
-            disabled={zoneSaving}
-            style={{
-              padding: "7px 14px", borderRadius: 8,
-              border: "1px solid rgba(234,179,8,0.4)",
-              background: zoneSaving ? "rgba(234,179,8,0.05)" : "rgba(234,179,8,0.12)",
-              color: "#eab308", fontSize: 12, fontWeight: 700,
-              cursor: zoneSaving ? "default" : "pointer",
-            }}
-          >
-            + Add Zone
-          </button>
-        </div>
-
-        <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.6, marginBottom: 14 }}>
-          Coordinates are in the canonical 1280×720 canvas. Adjust x1/y1/x2/y2
-          to position and size each rectangle; backend persists changes to
-          <code style={{ color: "#94a3b8", margin: "0 4px" }}>backend/zones.json</code>
-          and applies them live without a restart. Polygon zones can be
-          edited directly in the JSON file (advanced).
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={addRectZone}
+              disabled={zoneSaving}
+              style={{
+                padding: "7px 14px", borderRadius: 8,
+                border: "1px solid rgba(234,179,8,0.4)",
+                background: zoneSaving ? "rgba(234,179,8,0.05)" : "rgba(234,179,8,0.12)",
+                color: "#eab308", fontSize: 12, fontWeight: 700,
+                cursor: zoneSaving ? "default" : "pointer",
+              }}
+            >
+              + Add Rect Zone
+            </button>
+            <button
+              onClick={addPolygonZone}
+              disabled={zoneSaving}
+              style={{
+                padding: "7px 14px", borderRadius: 8,
+                border: "1px solid rgba(99,102,241,0.4)",
+                background: zoneSaving ? "rgba(99,102,241,0.05)" : "rgba(99,102,241,0.12)",
+                color: "#818cf8", fontSize: 12, fontWeight: 700,
+                cursor: zoneSaving ? "default" : "pointer",
+              }}
+            >
+              + Add Polygon Zone
+            </button>
+          </div>
         </div>
 
         {zoneError && (
           <div style={{ color: "#ef4444", fontSize: 12, marginBottom: 12 }}>{zoneError}</div>
         )}
 
+        {/* Canvas editor — renders all zones and handles drag interactions */}
+        <ZoneCanvas
+          zones={zones}
+          onUpdateZone={(updated) => {
+            // Optimistically update local state for instant feedback, then persist
+            setZones((zs) => zs.map((z) => (z.id === updated.id ? updated : z)));
+            updateZone(updated);
+          }}
+        />
+
         {zones.length === 0 ? (
           <div style={{ fontSize: 12, color: "#64748b", padding: "16px 0" }}>
-            No restricted zones configured. Click <strong>+ Add Zone</strong> to create one.
+            No restricted zones configured. Click <strong>+ Add Rect Zone</strong> or <strong>+ Add Polygon Zone</strong> above.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {zones.map((zone) => (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
+            {zones.map((zone, idx) => (
               <div
                 key={zone.id}
                 style={{
-                  border: "1px solid rgba(234,179,8,0.25)",
+                  border: `1px solid ${getZoneColor(idx)}40`,
+                  borderLeft: `3px solid ${getZoneColor(idx)}`,
                   borderRadius: 10,
                   padding: "12px 14px",
-                  background: "rgba(234,179,8,0.04)",
+                  background: `${getZoneColor(idx)}08`,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <ShieldAlert size={14} color="#eab308" />
+                    <ShieldAlert size={14} color={getZoneColor(idx)} />
                     <input
                       type="text"
                       value={zone.name}
@@ -1128,6 +1607,9 @@ export default function Settings() {
                       background: "rgba(255,255,255,0.04)",
                       borderRadius: 6, padding: "1px 6px", fontWeight: 700,
                     }}>{zone.shape.toUpperCase()}</span>
+                    {zone.shape === "polygon" && (
+                      <span style={{ fontSize: 9, color: "#818cf8" }}>{zone.points.length} pts</span>
+                    )}
                   </div>
                   <button
                     onClick={() => deleteZone(zone.id)}
@@ -1142,7 +1624,7 @@ export default function Settings() {
                     Delete
                   </button>
                 </div>
-                {zone.shape === "rect" ? (
+                {zone.shape === "rect" && (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
                     {(["x1", "y1", "x2", "y2"] as const).map((field) => (
                       <label key={field} style={{ fontSize: 10, color: "#94a3b8" }}>
@@ -1178,10 +1660,10 @@ export default function Settings() {
                       </label>
                     ))}
                   </div>
-                ) : (
-                  <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
-                    Polygon with {zone.points.length} point(s). Edit polygon
-                    coordinates directly in <code style={{ color: "#94a3b8" }}>backend/zones.json</code>.
+                )}
+                {zone.shape === "polygon" && (
+                  <div style={{ fontSize: 11, color: "#64748b" }}>
+                    Use the canvas above to drag vertices, double-click to delete a vertex, or right-click an edge to insert a vertex.
                   </div>
                 )}
               </div>
