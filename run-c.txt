@@ -1,3 +1,0 @@
-cd Gemini-Clone uv run uvicorn backend.main:app --host 127.0.0.1 --port 8080 --reload
-
-cd Gemini-Clone\artifacts\company-ai pnpm run dev
