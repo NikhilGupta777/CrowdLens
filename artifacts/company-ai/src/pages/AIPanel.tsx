@@ -26,6 +26,7 @@ const TYPE_META: Record<string, { color: string; Icon: typeof Zap; label: string
   fall_detected:     { color: "#dc2626", Icon: UserRoundX,   label: "Fall Detected" },
   restricted_zone:   { color: "#eab308", Icon: ShieldAlert,  label: "Restricted Zone" },
   manual_snapshot:   { color: "#60a5fa", Icon: Camera,       label: "Manual Snapshot" },
+  loitering:         { color: "#6366f1", Icon: AlertCircle,  label: "Loitering" },
 };
 
 const card: CSSProperties = {
@@ -720,7 +721,7 @@ export default function AIPanel() {
             </h1>
           </div>
           <p style={{ color: "#475569", fontSize: isMobile ? 11 : 13, margin: 0 }}>
-            Powered by GPT · Incident reports, alert chat, and live scene narration
+            Powered by Gemini · Incident reports, alert chat, and live scene narration
           </p>
         </div>
         <div style={{
