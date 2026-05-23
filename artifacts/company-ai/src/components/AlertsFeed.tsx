@@ -1,5 +1,5 @@
 import { Anomaly } from "../hooks/useSimulation";
-import { Zap, AlertCircle, Users, ShieldAlert, PersonStanding } from "lucide-react";
+import { Zap, AlertCircle, Users, ShieldAlert, PersonStanding, Clock, Package } from "lucide-react";
 
 const ANOMALY_META: Record<string, {
   color: string;
@@ -8,13 +8,17 @@ const ANOMALY_META: Record<string, {
   label: string;
   severity: string;
 }> = {
+  // Each type uses a distinct icon so the feed is glance-readable. Previously
+  // loitering and overcrowding both used the Users icon and were visually
+  // indistinguishable; now overcrowding keeps Users (group), loitering uses
+  // Clock (dwell-time semantics), unattended_object uses Package (the bag).
   running:          { color: "#a855f7", bg: "rgba(168,85,247,0.08)",  Icon: Zap,         label: "Running Detected",   severity: "CRITICAL" },
   fight_suspected:  { color: "#f43f5e", bg: "rgba(244,63,94,0.10)",   Icon: AlertCircle, label: "Fight Suspected",    severity: "CRITICAL" },
-  unattended_object:{ color: "#ef4444", bg: "rgba(239,68,68,0.08)",   Icon: AlertCircle, label: "Unattended Object",  severity: "HIGH"     },
+  unattended_object:{ color: "#ef4444", bg: "rgba(239,68,68,0.08)",   Icon: Package,     label: "Unattended Object",  severity: "HIGH"     },
   overcrowding:     { color: "#f97316", bg: "rgba(249,115,22,0.08)",  Icon: Users,       label: "Overcrowding",       severity: "MEDIUM"   },
   fall_detected:    { color: "#dc2626", bg: "rgba(220,38,38,0.10)",   Icon: PersonStanding, label: "Fall Detected",   severity: "CRITICAL" },
   restricted_zone:  { color: "#eab308", bg: "rgba(234,179,8,0.10)",   Icon: ShieldAlert, label: "Restricted Zone",    severity: "HIGH"     },
-  loitering:        { color: "#6366f1", bg: "rgba(99,102,241,0.08)",  Icon: Users,       label: "Loitering",          severity: "MEDIUM"   },
+  loitering:        { color: "#6366f1", bg: "rgba(99,102,241,0.08)",  Icon: Clock,       label: "Loitering",          severity: "MEDIUM"   },
 };
 
 interface Props {

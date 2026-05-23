@@ -21,7 +21,11 @@ function getThreatLevel(anomalyCount: number, types: string[]): "secure" | "warn
 
 function AppShell() {
   const { frame, connected } = useDetection();
-  const stickyAnomalies = useStickyAnomalies(frame?.anomalies ?? [], 8000);
+  // No explicit holdMs argument -> use the per-type table from useStickyAnomalies
+  // (12s for fall/fight, 10s for restricted/unattended, 8s loitering, 6s
+  // running/overcrowding). Critical events stay visible long enough for the
+  // operator to react; transient events don't pile up in the feed.
+  const stickyAnomalies = useStickyAnomalies(frame?.anomalies ?? []);
   const anomalyTypes = stickyAnomalies.map((a) => a.type);
   const threatLevel = getThreatLevel(stickyAnomalies.length, anomalyTypes);
 

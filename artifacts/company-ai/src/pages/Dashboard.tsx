@@ -146,7 +146,11 @@ export default function Dashboard() {
 
   const tracks = frame?.tracks ?? [];
   const anomalies = frame?.anomalies ?? [];
-  const visibleAnomalies = useStickyAnomalies(anomalies, 8000);
+  // Per-type sticky hold times: fall/fight 12 s, restricted/unattended 10 s,
+  // loitering 8 s, running/overcrowding 6 s. See useStickyAnomalies for the
+  // full table. Drop the legacy uniform 8 s so a fall alert lingers long
+  // enough for the operator to react before it disappears from the feed.
+  const visibleAnomalies = useStickyAnomalies(anomalies);
   const stats = frame?.stats ?? null;
   const displayMode = (frame?.mode as SourceMode) ?? sourceMode;
 

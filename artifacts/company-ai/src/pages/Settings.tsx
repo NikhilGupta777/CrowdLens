@@ -13,15 +13,41 @@ import {
   Zap,
 } from "lucide-react";
 
+interface ZoneRect {
+  id: string;
+  name: string;
+  shape: "rect";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+interface ZonePolygon {
+  id: string;
+  name: string;
+  shape: "polygon";
+  points: [number, number][];
+}
+
+type Zone = ZoneRect | ZonePolygon;
+
 interface Config {
   overcrowding_threshold: number;
   running_speed_threshold: number;
+  running_body_heights_per_sec: number;
+  running_pixel_floor: number;
   unattended_object_time: number;
   stationary_threshold: number;
   unattended_owner_proximity_px: number;
   unattended_owner_grace_time: number;
+  unattended_bystander_attends: boolean;
+  unattended_ghost_ttl: number;
+  overcrowding_cluster_distance_px: number;
+  overcrowding_min_cluster_size: number;
   fall_model_confidence_threshold: number;
   fall_persistence_time: number;
+  fall_person_iou_min: number;
   restricted_zone_enabled: boolean;
   restricted_zone_min_dwell: number;
   fight_detection_enabled: boolean;
@@ -35,15 +61,27 @@ interface Config {
   loitering_radius_px: number;
 }
 
+// Defaults match backend/config.py exactly. Mismatches previously caused the
+// UI to display values different from what the detector actually used until
+// the user clicked Save (e.g. loitering_radius_px showed 120 while the
+// detector ran with 180; stationary_threshold showed 150 while the detector
+// ran with 110.0). Now the UI mirrors the source of truth.
 const DEFAULT_CONFIG: Config = {
   overcrowding_threshold: 4,
   running_speed_threshold: 270,
+  running_body_heights_per_sec: 1.6,
+  running_pixel_floor: 60,
   unattended_object_time: 5,
-  stationary_threshold: 150,
+  stationary_threshold: 110,
   unattended_owner_proximity_px: 180,
   unattended_owner_grace_time: 2.0,
+  unattended_bystander_attends: true,
+  unattended_ghost_ttl: 8.0,
+  overcrowding_cluster_distance_px: 200,
+  overcrowding_min_cluster_size: 4,
   fall_model_confidence_threshold: 0.35,
   fall_persistence_time: 1.2,
+  fall_person_iou_min: 0.20,
   restricted_zone_enabled: true,
   restricted_zone_min_dwell: 0.6,
   fight_detection_enabled: true,
@@ -54,7 +92,7 @@ const DEFAULT_CONFIG: Config = {
   alert_cooldown_secs: 5,
   loitering_enabled: true,
   loitering_time_threshold: 15,
-  loitering_radius_px: 120,
+  loitering_radius_px: 180,
 };
 
 const COCO_CLASSES = [
@@ -330,6 +368,9 @@ const OVERLAY_OPTIONS: {
 export default function Settings() {
   const isMobile = useIsMobile();
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [zoneError, setZoneError] = useState<string | null>(null);
+  const [zoneSaving, setZoneSaving] = useState(false);
 
   const [overlayStyle, setOverlayStyleState] = useState<OverlayStyle>(() => {
     return (localStorage.getItem("crowdlens_overlay_style") as OverlayStyle) ?? "corners";
@@ -367,6 +408,118 @@ export default function Settings() {
       })
       .catch(() => setLoading(false));
   }, []);
+
+  // ── Restricted-zone CRUD ─────────────────────────────────────────────────
+  const reloadZones = async () => {
+    try {
+      const res = await fetch("/api/zones");
+      const data = await res.json();
+      const list = Array.isArray(data.zones) ? data.zones : [];
+      // Coerce legacy zones (no shape field) into rect.
+      setZones(list.map((z: Record<string, unknown>): Zone => {
+        if (z.shape === "polygon") {
+          const pts = Array.isArray(z.points)
+            ? (z.points as unknown[]).map((p): [number, number] => {
+                if (Array.isArray(p) && p.length >= 2) {
+                  return [Number(p[0]) || 0, Number(p[1]) || 0];
+                }
+                return [0, 0];
+              })
+            : [];
+          return {
+            id: String(z.id ?? ""),
+            name: String(z.name ?? z.id ?? "Zone"),
+            shape: "polygon",
+            points: pts,
+          };
+        }
+        return {
+          id: String(z.id ?? ""),
+          name: String(z.name ?? z.id ?? "Zone"),
+          shape: "rect",
+          x1: Number(z.x1 ?? 0),
+          y1: Number(z.y1 ?? 0),
+          x2: Number(z.x2 ?? 0),
+          y2: Number(z.y2 ?? 0),
+        };
+      }));
+    } catch {
+      // Keep previous list on transient failures.
+    }
+  };
+
+  useEffect(() => {
+    reloadZones();
+  }, []);
+
+  const addRectZone = async () => {
+    setZoneError(null);
+    setZoneSaving(true);
+    try {
+      const res = await fetch("/api/zones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `Zone ${zones.length + 1}`,
+          shape: "rect",
+          x1: 100, y1: 100, x2: 400, y2: 400,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Could not create zone");
+      }
+      await reloadZones();
+    } catch (e) {
+      setZoneError(e instanceof Error ? e.message : "Failed to add zone");
+    } finally {
+      setZoneSaving(false);
+    }
+  };
+
+  const updateZone = async (zone: Zone) => {
+    setZoneError(null);
+    try {
+      const body: Record<string, unknown> = {
+        name: zone.name,
+        shape: zone.shape,
+      };
+      if (zone.shape === "rect") {
+        body.x1 = zone.x1;
+        body.y1 = zone.y1;
+        body.x2 = zone.x2;
+        body.y2 = zone.y2;
+      } else {
+        body.points = zone.points;
+      }
+      const res = await fetch(`/api/zones/${encodeURIComponent(zone.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Could not save zone");
+      }
+      await reloadZones();
+    } catch (e) {
+      setZoneError(e instanceof Error ? e.message : "Failed to save zone");
+    }
+  };
+
+  const deleteZone = async (zoneId: string) => {
+    setZoneError(null);
+    try {
+      const res = await fetch(`/api/zones/${encodeURIComponent(zoneId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Could not delete zone");
+      await reloadZones();
+    } catch (e) {
+      setZoneError(e instanceof Error ? e.message : "Failed to delete zone");
+    }
+  };
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const poll = async () => {
@@ -693,6 +846,118 @@ export default function Settings() {
             onChange={(v) => setConfig((c) => ({ ...c, unattended_owner_grace_time: Number(v.toFixed(1)) }))}
             unit=" s"
           />
+
+          <PremiumSlider
+            label="Running — Body Heights / Sec"
+            description="Distance-invariant running threshold: average speed must exceed this many bbox heights per second. Works at any camera distance."
+            icon={Zap}
+            color="#a855f7"
+            value={config.running_body_heights_per_sec}
+            min={0.4}
+            max={4.0}
+            step={0.1}
+            onChange={(v) => setConfig((c) => ({ ...c, running_body_heights_per_sec: Number(v.toFixed(1)) }))}
+            unit=" b/s"
+          />
+
+          <PremiumSlider
+            label="Running — Pixel Floor (anti-jitter)"
+            description="Body-heights/sec path also requires raw speed above this floor. Rejects tiny bboxes producing huge body-heights from a few pixels of YOLO jitter."
+            icon={Move}
+            color="#a855f7"
+            value={config.running_pixel_floor}
+            min={0}
+            max={300}
+            step={5}
+            onChange={(v) => setConfig((c) => ({ ...c, running_pixel_floor: v }))}
+            unit=" px/s"
+          />
+
+          <ToggleCard
+            label="Bystander Attends Object"
+            description="When ON, any person near an unattended object counts as a guardian (not just the original owner). Reduces false positives in busy areas where the owner walks away but a different person is right next to the bag."
+            enabled={config.unattended_bystander_attends}
+            onToggle={(next) => setConfig((c) => ({ ...c, unattended_bystander_attends: next }))}
+          />
+
+          <PremiumSlider
+            label="Unattended Ghost Cache TTL"
+            description="When a baggage track briefly disappears (occlusion), its stationary state is cached for this many seconds. A re-detected bag in the same area resumes the unattended timer instead of restarting from zero."
+            icon={Clock}
+            color="#f97316"
+            value={config.unattended_ghost_ttl}
+            min={0}
+            max={30}
+            step={0.5}
+            onChange={(v) => setConfig((c) => ({ ...c, unattended_ghost_ttl: Number(v.toFixed(1)) }))}
+            unit=" s"
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 20, marginBottom: 20 }}>
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            CROWD CLUSTERING
+          </div>
+
+          <PremiumSlider
+            label="Cluster Distance"
+            description="Two persons belong to the same cluster if they are within this many pixels of any cluster member (single-link). Tight crowds at a doorway trigger even when total scene count is low."
+            icon={Move}
+            color="#f97316"
+            value={config.overcrowding_cluster_distance_px}
+            min={50}
+            max={500}
+            step={10}
+            onChange={(v) => setConfig((c) => ({ ...c, overcrowding_cluster_distance_px: v }))}
+            unit=" px"
+          />
+
+          <PremiumSlider
+            label="Min Cluster Size"
+            description="Minimum cluster size to emit an overcrowding alert. Independent of overcrowding_threshold so small clusters in large crowds don't spam alerts."
+            icon={Users}
+            color="#f97316"
+            value={config.overcrowding_min_cluster_size}
+            min={2}
+            max={20}
+            step={1}
+            onChange={(v) => setConfig((c) => ({ ...c, overcrowding_min_cluster_size: v }))}
+            unit=" ppl"
+          />
+        </div>
+
+        <div
+          style={{
+            background: "var(--app-card-bg)",
+            border: "1px solid var(--app-card-border)",
+            borderRadius: 14,
+            padding: 24,
+          }}
+        >
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700, marginBottom: 24 }}>
+            FALL ASSOCIATION
+          </div>
+
+          <PremiumSlider
+            label="Fall ↔ Person IoU Min"
+            description="Minimum bbox IoU between a fall detection and a person track to associate them. Lower = more aggressive linking; higher = fewer false associations."
+            icon={UserRoundX}
+            color="#dc2626"
+            value={config.fall_person_iou_min}
+            min={0}
+            max={0.95}
+            step={0.05}
+            onChange={(v) => setConfig((c) => ({ ...c, fall_person_iou_min: Number(v.toFixed(2)) }))}
+          />
         </div>
       </div>
 
@@ -768,6 +1033,151 @@ export default function Settings() {
           />
         </div>
       </div>
+
+      {/* ── Restricted Zone Editor ─────────────────────────────────────────── */}
+      <div
+        style={{
+          background: "var(--app-card-bg)",
+          border: "1px solid var(--app-card-border)",
+          borderRadius: 14,
+          padding: 24,
+          marginBottom: 20,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ fontSize: 9, color: "#475569", letterSpacing: 2, fontWeight: 700 }}>
+            RESTRICTED ZONES — RECTANGLE EDITOR
+          </div>
+          <button
+            onClick={addRectZone}
+            disabled={zoneSaving}
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid rgba(234,179,8,0.4)",
+              background: zoneSaving ? "rgba(234,179,8,0.05)" : "rgba(234,179,8,0.12)",
+              color: "#eab308", fontSize: 12, fontWeight: 700,
+              cursor: zoneSaving ? "default" : "pointer",
+            }}
+          >
+            + Add Zone
+          </button>
+        </div>
+
+        <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.6, marginBottom: 14 }}>
+          Coordinates are in the canonical 1280×720 canvas. Adjust x1/y1/x2/y2
+          to position and size each rectangle; backend persists changes to
+          <code style={{ color: "#94a3b8", margin: "0 4px" }}>backend/zones.json</code>
+          and applies them live without a restart. Polygon zones can be
+          edited directly in the JSON file (advanced).
+        </div>
+
+        {zoneError && (
+          <div style={{ color: "#ef4444", fontSize: 12, marginBottom: 12 }}>{zoneError}</div>
+        )}
+
+        {zones.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#64748b", padding: "16px 0" }}>
+            No restricted zones configured. Click <strong>+ Add Zone</strong> to create one.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {zones.map((zone) => (
+              <div
+                key={zone.id}
+                style={{
+                  border: "1px solid rgba(234,179,8,0.25)",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                  background: "rgba(234,179,8,0.04)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <ShieldAlert size={14} color="#eab308" />
+                    <input
+                      type="text"
+                      value={zone.name}
+                      maxLength={64}
+                      onChange={(e) =>
+                        setZones((zs) => zs.map((z) => (z.id === zone.id ? { ...z, name: e.target.value } : z)))
+                      }
+                      onBlur={() => updateZone(zone)}
+                      style={{
+                        background: "rgba(255,255,255,0.04)",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        borderRadius: 6, padding: "4px 8px",
+                        color: "var(--app-text)", fontSize: 12, minWidth: 160,
+                        outline: "none",
+                      }}
+                    />
+                    <span style={{ fontSize: 9, color: "#475569", fontFamily: "monospace" }}>id={zone.id}</span>
+                    <span style={{
+                      fontSize: 9, color: "#94a3b8", letterSpacing: 1,
+                      background: "rgba(255,255,255,0.04)",
+                      borderRadius: 6, padding: "1px 6px", fontWeight: 700,
+                    }}>{zone.shape.toUpperCase()}</span>
+                  </div>
+                  <button
+                    onClick={() => deleteZone(zone.id)}
+                    style={{
+                      padding: "4px 10px", borderRadius: 6,
+                      border: "1px solid rgba(239,68,68,0.4)",
+                      background: "rgba(239,68,68,0.1)",
+                      color: "#ef4444", fontSize: 11, fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+                {zone.shape === "rect" ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                    {(["x1", "y1", "x2", "y2"] as const).map((field) => (
+                      <label key={field} style={{ fontSize: 10, color: "#94a3b8" }}>
+                        <span style={{ display: "block", letterSpacing: 1, fontWeight: 700, marginBottom: 4 }}>
+                          {field.toUpperCase()}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={field.startsWith("x") ? 1280 : 720}
+                          step={1}
+                          value={zone[field]}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setZones((zs) =>
+                              zs.map((z) =>
+                                z.id === zone.id && z.shape === "rect"
+                                  ? { ...z, [field]: val }
+                                  : z,
+                              ),
+                            );
+                          }}
+                          onBlur={() => updateZone(zone)}
+                          style={{
+                            width: "100%", boxSizing: "border-box",
+                            background: "rgba(255,255,255,0.04)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 6, padding: "5px 8px",
+                            color: "var(--app-text)", fontSize: 12,
+                            fontFamily: "monospace", outline: "none",
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
+                    Polygon with {zone.points.length} point(s). Edit polygon
+                    coordinates directly in <code style={{ color: "#94a3b8" }}>backend/zones.json</code>.
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* ───────────────────────────────────────────────────────────────────── */}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, marginBottom: 20 }}>
         <div

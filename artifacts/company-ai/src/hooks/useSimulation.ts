@@ -11,6 +11,12 @@ export interface Track {
   running: boolean;
   confidence?: number;
   zone?: "A" | "B" | "C";
+  hit_streak?: number;
+  hits?: number;
+  time_since_update?: number;
+  predicted?: boolean;
+  frame_width?: number;
+  frame_height?: number;
 }
 
 export interface Anomaly {
@@ -25,6 +31,7 @@ export interface Anomaly {
   track_id?: number;
   track_ids?: number[];
   count?: number;
+  cluster_size?: number;
   duration?: number;
   avg_speed?: number;
   body_heights_per_sec?: number;
@@ -32,6 +39,7 @@ export interface Anomaly {
   distance?: number;
   confidence?: number;
   owner_absent?: number;
+  owner_track_id?: number;
   zone_id?: string;
   zone_name?: string;
   note?: string;
@@ -92,6 +100,11 @@ export function useSimulation() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldReconnectRef = useRef(true);
+  // Exponential backoff state. Starts at BASE, doubles up to CAP, resets to
+  // BASE after a successful connect. Without this, an unreachable backend
+  // produces a tight 2 s reconnect loop forever; visitors stare at
+  // "Connecting…" while every retry hits the network unnecessarily.
+  const reconnectAttemptRef = useRef(0);
   // Frame-dropping: only process most recent message per animation frame
   const pendingFrameRef = useRef<FrameData | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -123,6 +136,9 @@ export function useSimulation() {
 
       ws.onopen = () => {
         setConnected(true);
+        // Successful connect — reset the backoff counter so the next
+        // disconnect starts from BASE_RECONNECT_MS again.
+        reconnectAttemptRef.current = 0;
         if (reconnectRef.current) {
           clearTimeout(reconnectRef.current);
           reconnectRef.current = null;
@@ -144,7 +160,16 @@ export function useSimulation() {
         setConnected(false);
         wsRef.current = null;
         if (!shouldReconnectRef.current) return;
-        reconnectRef.current = setTimeout(connect, 2000);
+        // Exponential backoff: 2 s, 4 s, 8 s, 16 s, 30 s (cap).
+        const BASE_RECONNECT_MS = 2000;
+        const RECONNECT_CAP_MS = 30000;
+        const attempt = reconnectAttemptRef.current;
+        const delay = Math.min(
+          RECONNECT_CAP_MS,
+          BASE_RECONNECT_MS * 2 ** Math.min(attempt, 4),
+        );
+        reconnectAttemptRef.current = attempt + 1;
+        reconnectRef.current = setTimeout(connect, delay);
       };
 
       ws.onerror = () => {
@@ -152,12 +177,22 @@ export function useSimulation() {
       };
     } catch {
       if (!shouldReconnectRef.current) return;
-      reconnectRef.current = setTimeout(connect, 2000);
+      // Same backoff on synchronous construction failure.
+      const BASE_RECONNECT_MS = 2000;
+      const RECONNECT_CAP_MS = 30000;
+      const attempt = reconnectAttemptRef.current;
+      const delay = Math.min(
+        RECONNECT_CAP_MS,
+        BASE_RECONNECT_MS * 2 ** Math.min(attempt, 4),
+      );
+      reconnectAttemptRef.current = attempt + 1;
+      reconnectRef.current = setTimeout(connect, delay);
     }
   }, [scheduleUpdate]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;
+    reconnectAttemptRef.current = 0;
     connect();
     return () => {
       shouldReconnectRef.current = false;
