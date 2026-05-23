@@ -256,6 +256,42 @@ def _get_zone(cx: float, frame_width: int) -> str:
     return "C"
 
 
+def _redact_url(url: str | None) -> str | None:
+    """Replace the password component of a URL with '***'.
+
+    Used to strip credentials from logs and from any payload that flows back
+    to the frontend (e.g. ``stream_status["url"]``). The username, scheme,
+    host, port, path, and query are preserved so the operator can still
+    recognise their own stream configuration in the UI / log output. URLs
+    without credentials pass through unchanged.
+
+    Examples
+    --------
+    >>> _redact_url("rtsp://admin:secret@cam.example.com/stream")
+    'rtsp://admin:***@cam.example.com/stream'
+    >>> _redact_url("http://192.168.1.10:4747/video")
+    'http://192.168.1.10:4747/video'
+    >>> _redact_url(None)
+    None
+    """
+    if not url:
+        return url
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+    if parsed.password is None:
+        return url
+    user = parsed.username or ""
+    # Reassemble. urlsplit/SplitResult is read-only, so build the netloc by hand.
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{user}:***@{host}{port}" if user else f":***@{host}{port}"
+    return f"{parsed.scheme}://{netloc}{parsed.path}" + (
+        f"?{parsed.query}" if parsed.query else ""
+    ) + (f"#{parsed.fragment}" if parsed.fragment else "")
+
+
 def _evict_stale_cooldowns(now: float) -> None:
     """Remove cooldown entries older than _COOLDOWN_MAX_AGE to bound dict size."""
     if len(_alert_cooldowns) < 500:
@@ -608,21 +644,28 @@ def build_frame_payload(
     }
 
 
-def _apply_config():
+def _apply_config() -> list[str]:
     """Push current_config values into backend.config module attributes.
 
     Validates every key against a known allowlist so a typo in current_config
     or a stray key from a /api/config PUT cannot silently set a nonexistent
     cfg attribute (which previously did nothing useful but masked real bugs).
+
+    Returns the list of unknown keys that were ignored. Callers that handle
+    a user-facing PUT can include this list in their response so the user
+    sees the typo in the API response rather than only in the server log.
     """
     import backend.config as cfg
 
+    unknown: list[str] = []
     for k, v in current_config.items():
         attr = k.upper()
         if attr not in _CONFIG_ALLOWED_ATTRS:
             print(f"[config] ignoring unknown config key: {k!r}")
+            unknown.append(k)
             continue
         setattr(cfg, attr, v)
+    return unknown
 
 
 def _release_gpu_memory() -> None:
@@ -1153,7 +1196,7 @@ async def stream_processing_loop(url: str):
     try:
         proc = await loop.run_in_executor(None, _start_proc)
         frame_q, reader_stop, reader_thread, reader_state = _start_reader(proc)
-        print(f"[stream] FFmpeg opened: {source_input}")
+        print(f"[stream] FFmpeg opened: {_redact_url(source_input)}")
         frames_processed = 0
 
         while True:
@@ -1200,7 +1243,7 @@ async def stream_processing_loop(url: str):
                         frame_q, reader_stop, reader_thread, reader_state = (
                             _start_reader(proc)
                         )
-                        print(f"[stream] FFmpeg opened: {source_input}")
+                        print(f"[stream] FFmpeg opened: {_redact_url(source_input)}")
                         continue
                     except Exception as dl_err:
                         stream_status["error"] = (
@@ -1269,7 +1312,7 @@ async def stream_processing_loop(url: str):
                 frames_processed = 0
                 proc = await loop.run_in_executor(None, _start_proc)
                 frame_q, reader_stop, reader_thread, reader_state = _start_reader(proc)
-                print(f"[stream] FFmpeg opened: {source_input}")
+                print(f"[stream] FFmpeg opened: {_redact_url(source_input)}")
                 continue
 
             frames_processed += 1
@@ -1803,6 +1846,11 @@ def delete_zone(zone_id: str):
 
 
 class ConfigUpdate(BaseModel):
+    # Keep unknown keys on the model so the PUT response can surface
+    # typos to the caller. Without extra="allow" Pydantic silently drops
+    # them and the user only sees the missing change in behaviour.
+    model_config = {"extra": "allow"}
+
     overcrowding_threshold: int | None = None
     running_speed_threshold: float | None = None
     running_body_heights_per_sec: float | None = None
@@ -1927,8 +1975,18 @@ def update_config(body: ConfigUpdate):
     if body.db_alert_retention is not None:
         # 0 disables retention pruning entirely; useful for forensic captures.
         current_config["db_alert_retention"] = int(_clamp(body.db_alert_retention, 0, 1_000_000))
-    _apply_config()
-    return current_config
+    unknown_from_apply = _apply_config()
+    # Surface unknown / typo'd keys back to the caller so the user sees the
+    # mistake in the API response, not just in the server log. Two sources:
+    # (1) keys present in the PUT body that aren't in ConfigUpdate's typed
+    #     fields (model_extra is populated because we set extra="allow"); and
+    # (2) keys already in current_config that aren't in the cfg allowlist
+    #     (defensive — shouldn't happen unless something manually mutated it).
+    typo_keys = sorted({*(body.model_extra or {}).keys(), *unknown_from_apply})
+    response: dict = {**current_config}
+    if typo_keys:
+        response["unknown_keys"] = typo_keys
+    return response
 
 
 # ─── Video endpoints ──────────────────────────────────────────────────────────
@@ -2093,7 +2151,11 @@ async def start_stream(body: StreamRequest):
     await _cancel_active()
     _reset_fps_window()
     _processing_mode = "stream"
-    stream_status["url"] = url
+    # Store the redacted URL in the public status payload so the frontend
+    # never echoes the password back via /api/stream/status. The full URL
+    # is still passed to the processing loop, just kept out of the API
+    # surface and any logs that consume stream_status["url"].
+    stream_status["url"] = _redact_url(url)
     stream_status["error"] = None
     _active_task = asyncio.create_task(stream_processing_loop(url))
     return {"success": True}
