@@ -113,15 +113,15 @@ const DEFAULT_CONFIG: Config = {
   lpr_confidence_threshold: 0.40,
 };
 
+// Mirrors backend/config.py COCO_CLASSES (the classes actually detected).
+// Bottle/cup/phone/book live in DISABLED_COCO_CLASSES on the backend and are
+// not monitored, so they are intentionally omitted here.
 const COCO_CLASSES = [
   { id: 0, name: "Person", color: "#10b981" },
+  { id: 2, name: "Car", color: "#3b82f6" },
   { id: 24, name: "Backpack", color: "#f59e0b" },
-  { id: 26, name: "Handbag", color: "#f59e0b" },
+  { id: 26, name: "Baggage", color: "#f59e0b" },
   { id: 28, name: "Suitcase", color: "#f59e0b" },
-  { id: 39, name: "Bottle", color: "#f59e0b" },
-  { id: 41, name: "Cup", color: "#f59e0b" },
-  { id: 67, name: "Cell Phone", color: "#f59e0b" },
-  { id: 73, name: "Book", color: "#f59e0b" },
 ];
 
 function PremiumSlider({

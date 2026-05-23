@@ -11,7 +11,12 @@ const ANOMALY_LABELS: Record<string, string> = {
   fall_detected:     "🆘 Fall detected",
   restricted_zone:   "🚧 Restricted zone breach",
   loitering:         "🕐 Loitering detected",
+  ppe_violation:     "⛑️ PPE violation",
 };
+
+// Informational detections (faces, plates) are logged for review but are not
+// incidents, so they never raise a desktop notification.
+const INFO_ANOMALY_TYPES = new Set(["face_detected", "lpr_detected"]);
 
 export function useNotifications(anomalies: Anomaly[]) {
   const [permission, setPermission] = useState<Permission>(() => {
@@ -38,6 +43,7 @@ export function useNotifications(anomalies: Anomaly[]) {
     if (anomalies.length === 0) return;
 
     for (const a of anomalies) {
+      if (INFO_ANOMALY_TYPES.has(a.type)) continue;
       const key = `${a.type}-${a.track_id ?? ""}`;
       if (lastFiredRef.current.has(key)) continue;
       lastFiredRef.current.add(key);

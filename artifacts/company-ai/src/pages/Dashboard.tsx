@@ -144,7 +144,7 @@ function saveCameraProfiles(profiles: CameraProfile[]) {
   }
 }
 
-const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone", "running"]);
+const DASHBOARD_CRITICAL_TYPES = new Set(["fight_suspected", "fall_detected", "unattended_object", "restricted_zone", "running", "ppe_violation"]);
 
 export default function Dashboard() {
   const { frame, connected } = useDetection();

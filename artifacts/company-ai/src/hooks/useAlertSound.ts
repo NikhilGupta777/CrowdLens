@@ -95,7 +95,11 @@ export function useAlertSound(anomalies: Anomaly[], enabled = true) {
         } else if (type === "loitering") {
           playTone(ctx, 550, 0.35, 0.15, 0);
           playTone(ctx, 650, 0.25, 0.12, 400);
+        } else if (type === "ppe_violation") {
+          playTone(ctx, 880, 0.22, 0.22, 0);
+          playTone(ctx, 660, 0.2, 0.18, 240);
         }
+        // face_detected / lpr_detected are informational — intentionally silent.
 
         lastPlayedRef.current[type] = now;
       }
