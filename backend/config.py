@@ -80,8 +80,8 @@ RUNNING_BODY_HEIGHTS_PER_SEC = 1.6       # ~1.6 body heights/sec ≈ jogging+
 # Anti-jitter floor. A tiny bbox (e.g. 30 px tall) can produce 2 body-heights
 # /sec from a few pixels of YOLO jitter; the floor rejects those false positives.
 RUNNING_PIXEL_FLOOR = 60.0               # px/sec absolute minimum
-RUNNING_PERSISTENCE_TIME = 0.8
-RUNNING_MIN_HIT_STREAK = 4
+RUNNING_PERSISTENCE_TIME = 1.2
+RUNNING_MIN_HIT_STREAK = 5
 # Tolerate brief speed dips (single-frame stutter, momentary YOLO miss) before
 # resetting the candidate timer. Without this, a 1-frame slowdown wipes
 # accumulated persistence and running is repeatedly missed.

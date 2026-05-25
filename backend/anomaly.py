@@ -172,16 +172,25 @@ class AnomalyDetector:
             self.running_last_fast_at.pop(track_id, None)
             return None
 
-        recent = history[-5:]
+        recent = history[-8:]
         time_span = recent[-1][2] - recent[0][2]
-        if time_span < 0.01:
+        # Require a meaningful time window. On CPU at variable FPS,
+        # 5 frames can arrive in <0.2s — normal bbox jitter of 30px
+        # over 0.15s = 200 px/s, enough to falsely trigger. By requiring
+        # at least 0.3s of history, we smooth out single-frame spikes.
+        if time_span < 0.30:
             return None
 
-        dist = 0.0
-        for i in range(1, len(recent)):
-            dist += np.hypot(recent[i][0] - recent[i-1][0],
-                             recent[i][1] - recent[i-1][1])
-        avg_speed = dist / time_span
+        # Use NET displacement (start→end straight line), not path
+        # distance. Path distance accumulates YOLO bbox jitter: a
+        # stationary person's center bounces 5-10px per frame, summing
+        # to 30-60px over 8 frames — enough to look like walking.
+        # Displacement measures actual movement across the scene.
+        displacement = float(np.hypot(
+            recent[-1][0] - recent[0][0],
+            recent[-1][1] - recent[0][1],
+        ))
+        avg_speed = displacement / time_span
 
         # Body-heights/sec: average height from recent history entries
         heights = [entry[4] for entry in recent if len(entry) >= 5]
@@ -967,14 +976,15 @@ class AnomalyDetector:
                 # alerts when the next real detection re-arrives.
                 is_predicted = bool(track.get("predicted", False))
 
-                # Compute motion for fight detection
-                recent = history[-5:]
+                # Compute motion for fight detection — use displacement
+                # (not path distance) to avoid jitter-inflated speeds.
+                recent = history[-8:]
                 time_span = recent[-1][2] - recent[0][2]
-                dist = 0.0
-                for i in range(1, len(recent)):
-                    dist += np.hypot(recent[i][0] - recent[i-1][0],
-                                     recent[i][1] - recent[i-1][1])
-                avg_speed = dist / time_span if time_span > 0.01 else 0.0
+                displacement = float(np.hypot(
+                    recent[-1][0] - recent[0][0],
+                    recent[-1][1] - recent[0][1],
+                )) if time_span > 0.01 else 0.0
+                avg_speed = displacement / time_span if time_span > 0.30 else 0.0
                 # Predicted tracks contribute 0 speed to fight pairing too:
                 # they have no fresh detection so any apparent motion is
                 # purely Kalman extrapolation.
