@@ -493,23 +493,42 @@ class AnomalyDetector:
                 best_track_id = None
 
             # ── Pose-change filter ──────────────────────────────────────────
-            # A real fall means the person TRANSITIONED from upright to
-            # horizontal. If the matched person was never upright in recent
-            # history (e.g. they've been bending/crouching the whole time),
-            # this is likely a false positive from the model misclassifying
-            # a bending or crouching pose.
+            # The fall model is single-frame: it cannot tell the difference
+            # between "fallen on ground" and "bending to pick something up."
+            # We use the PERSON TRACKER's bbox aspect ratio as ground truth:
+            #
+            #  1. If the person's CURRENT bbox is upright (h > w), they are
+            #     standing/walking — the fall model is wrong. Reject.
+            #  2. If the person was NEVER upright in recent history, they
+            #     entered the frame already crouching — not a fall. Reject.
+            #  3. Only fire if: person WAS upright before AND is NOW in a
+            #     non-upright pose (actual upright→fallen transition).
             if best_track_id is not None:
+                # Check current person bbox from the YOLO person tracker
+                current_person_box = None
+                for tid, pbox in person_boxes:
+                    if tid == best_track_id:
+                        current_person_box = pbox
+                        break
+                if current_person_box is not None:
+                    pw = max(1.0, current_person_box[2] - current_person_box[0])
+                    ph = max(1.0, current_person_box[3] - current_person_box[1])
+                    # If person bbox is clearly upright (tall), they're
+                    # standing/walking — fall model is a false positive
+                    if ph > pw * 1.15:
+                        continue
+
                 hist = self.track_history.get(best_track_id, [])
-                # Check the last ~15 history entries for an upright frame.
-                # Each entry is (cx, cy, time, w, h). Upright = h > w * 1.2
                 recent_hist = hist[-15:]
+                # Check if person was ever upright in recent history
+                # Each entry is (cx, cy, time, w, h). Upright = h > w * 1.2
                 was_upright = any(
                     len(e) >= 5 and e[4] > e[3] * 1.2
                     for e in recent_hist
                 )
                 if not was_upright and len(recent_hist) >= 5:
-                    # Person has never been upright recently — skip this
-                    # fall detection (likely bending/crouching, not a fall)
+                    # Person has never been upright — likely entered frame
+                    # already crouching/sitting. Not a fall.
                     continue
 
             # Critical filter: reject fall boxes that have NO nearby person.
