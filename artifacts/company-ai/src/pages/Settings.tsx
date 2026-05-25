@@ -48,6 +48,7 @@ interface Config {
   fall_model_confidence_threshold: number;
   fall_persistence_time: number;
   fall_person_iou_min: number;
+  fall_baggage_overlap_reject: number;
   restricted_zone_enabled: boolean;
   restricted_zone_min_dwell: number;
   fight_detection_enabled: boolean;
@@ -91,6 +92,7 @@ const DEFAULT_CONFIG: Config = {
   fall_model_confidence_threshold: 0.35,
   fall_persistence_time: 1.2,
   fall_person_iou_min: 0.20,
+  fall_baggage_overlap_reject: 0.35,
   restricted_zone_enabled: true,
   restricted_zone_min_dwell: 0.6,
   fight_detection_enabled: true,
@@ -1446,6 +1448,18 @@ export default function Settings() {
             max={0.95}
             step={0.05}
             onChange={(v) => setConfig((c) => ({ ...c, fall_person_iou_min: Number(v.toFixed(2)) }))}
+          />
+
+          <PremiumSlider
+            label="Fall / Baggage Reject"
+            description="Reject model-only fall boxes when this much of the fall box overlaps baggage. Higher = less aggressive baggage suppression."
+            icon={Package}
+            color="#f59e0b"
+            value={config.fall_baggage_overlap_reject}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => setConfig((c) => ({ ...c, fall_baggage_overlap_reject: Number(v.toFixed(2)) }))}
           />
         </div>
       </div>

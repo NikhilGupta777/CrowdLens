@@ -155,6 +155,12 @@ def detect_falls(frame: np.ndarray, conf_override: float | None = None) -> list[
         if float(y2) < fh * 0.20:
             continue
 
+        # Sanity filter 3: reject extremely flat/wide boxes (ground/pavement)
+        # A fallen person still has some height; a box that is >4x wider than
+        # tall is almost certainly a ground texture false positive.
+        if box_w > box_h * 4.0:
+            continue
+
         fallen_results.append({
             "bbox": [float(x1), float(y1), float(x2), float(y2)],
             "confidence": round(confidence, 3),

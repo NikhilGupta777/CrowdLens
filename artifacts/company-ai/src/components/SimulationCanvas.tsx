@@ -87,6 +87,7 @@ function drawCornersStyle(
   });
 
   for (const track of sorted) {
+    if (isStalePredictedObject(track)) continue;
     const { x1, y1, x2, y2, class_id, class_name, running, id, confidence } = track;
     const isAnomaly = anomalyIds.has(id);
     const isPerson = class_id === 0;
@@ -129,6 +130,7 @@ function drawDotsStyle(
   t: number,
 ) {
   for (const track of tracks) {
+    if (isStalePredictedObject(track)) continue;
     const { x1, x2, y2, class_id, id, running } = track;
     const isAnomaly = anomalyIds.has(id);
     const isPerson = class_id === 0;
@@ -228,6 +230,7 @@ function drawChipsStyle(
   });
 
   for (const track of sorted) {
+    if (isStalePredictedObject(track)) continue;
     const { x1, y1, x2, y2, class_id, class_name, running, id, confidence } = track;
     const isAnomaly = anomalyIds.has(id);
     const isPerson = class_id === 0;
@@ -275,6 +278,10 @@ interface RestrictedZone {
 
 interface SmoothedBox {
   x1: number; y1: number; x2: number; y2: number;
+}
+
+function isStalePredictedObject(track: Track): boolean {
+  return Boolean(track.predicted && track.class_id !== 0 && (track.time_since_update ?? 0) > 2);
 }
 
 interface Props {
@@ -350,6 +357,9 @@ function SimulationCanvas({
       }
 
       const anomalyIds = getAnomalyIds(anomalies);
+      const staleObjectIds = new Set(
+        tracks.filter(isStalePredictedObject).map((track) => track.id),
+      );
 
       ctx.clearRect(0, 0, W, H);
 
@@ -499,6 +509,7 @@ function SimulationCanvas({
 
       for (const anomaly of anomalies) {
         if (!anomaly.position) continue;
+        if (anomaly.type === "unattended_object" && anomaly.track_id != null && staleObjectIds.has(anomaly.track_id)) continue;
         const [ax, ay] = anomaly.position;
         const pulse = 0.5 + 0.5 * Math.sin(t / 350);
 
@@ -676,7 +687,9 @@ export default memo(SimulationCanvas, (prev, next) => {
   for (let i = 0; i < prev.tracks.length; i++) {
     const p = prev.tracks[i], n = next.tracks[i];
     if (p.id !== n.id || p.x1 !== n.x1 || p.y1 !== n.y1 || p.x2 !== n.x2 || p.y2 !== n.y2
-      || p.running !== n.running || p.confidence !== n.confidence || p.class_name !== n.class_name) return false;
+      || p.running !== n.running || p.confidence !== n.confidence || p.class_id !== n.class_id
+      || p.class_name !== n.class_name || p.predicted !== n.predicted
+      || p.time_since_update !== n.time_since_update) return false;
   }
   for (let i = 0; i < prev.anomalies.length; i++) {
     const p = prev.anomalies[i], n = next.anomalies[i];

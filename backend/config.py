@@ -27,9 +27,10 @@ STREAM_TARGET_FPS = 15
 STREAM_DETECTION_CONFIDENCE = 0.25
 
 # Detection confidence overrides per mode.
-# Lower thresholds catch more crowd members (small/distant/partially occluded).
-VIDEO_DETECTION_CONFIDENCE = 0.18
-WEBCAM_DETECTION_CONFIDENCE = 0.20
+# 0.22 is the sweet spot: catches partially-occluded people without flooding
+# the tracker with phantom detections that steal IDs and delay real tracks.
+VIDEO_DETECTION_CONFIDENCE = 0.22
+WEBCAM_DETECTION_CONFIDENCE = 0.22
 
 # Tracker confirmation policy.
 # 1 = show tracks immediately (better for fast occlusion recovery).
@@ -79,8 +80,8 @@ RUNNING_BODY_HEIGHTS_PER_SEC = 1.6       # ~1.6 body heights/sec ≈ jogging+
 # Anti-jitter floor. A tiny bbox (e.g. 30 px tall) can produce 2 body-heights
 # /sec from a few pixels of YOLO jitter; the floor rejects those false positives.
 RUNNING_PIXEL_FLOOR = 60.0               # px/sec absolute minimum
-RUNNING_PERSISTENCE_TIME = 0.6
-RUNNING_MIN_HIT_STREAK = 3
+RUNNING_PERSISTENCE_TIME = 0.8
+RUNNING_MIN_HIT_STREAK = 4
 # Tolerate brief speed dips (single-frame stutter, momentary YOLO miss) before
 # resetting the candidate timer. Without this, a 1-frame slowdown wipes
 # accumulated persistence and running is repeatedly missed.
@@ -88,7 +89,7 @@ RUNNING_RESET_GRACE_TIME = 0.4
 
 # ── Unattended object ────────────────────────────────────────────────────────
 UNATTENDED_OBJECT_TIME = 5.0
-STATIONARY_THRESHOLD = 110.0             # px spread over recent history
+STATIONARY_THRESHOLD = 130.0             # px spread over recent history
 UNATTENDED_OWNER_PROXIMITY_PX = 180.0
 UNATTENDED_OWNER_GRACE_TIME = 2.0
 # When True, ANY tracked person within UNATTENDED_OWNER_PROXIMITY_PX of the
@@ -107,7 +108,7 @@ UNATTENDED_GHOST_CELL_PX = 96            # spatial bucket size for ghost lookup
 
 # ── Fall detection ───────────────────────────────────────────────────────────
 FALL_PERSISTENCE_TIME = 1.2
-FALL_MODEL_CONFIDENCE_THRESHOLD = 0.35
+FALL_MODEL_CONFIDENCE_THRESHOLD = 0.45
 # How long a confirmed fall stays "active" after the model stops emitting
 # the bbox. During this window the alert is still surfaced so the operator
 # can react even if the fall detector blinks (occlusion / pose change).
@@ -115,13 +116,14 @@ FALL_ALERT_HOLD_TIME = 3.0
 # Sanity filters on top of the HF fall model. The model itself classifies
 # "fallen" — these checks reject obvious false positives without rejecting
 # valid forward-collapse / kneeling falls.
-FALL_MIN_AREA_RATIO = 0.005              # min bbox area / frame area (~0.5%)
-FALL_ASPECT_RATIO_MIN = 0.40             # min width/height of a fallen box
+FALL_MIN_AREA_RATIO = 0.008              # min bbox area / frame area (~0.8%)
+FALL_ASPECT_RATIO_MIN = 0.55             # min width/height of a fallen box
 # Minimum IoU between a fall bbox and a person track bbox to associate the
 # fall with that track id. Helps distinguish concurrent falls and avoids
 # all falls falling back to spatial-cell cooldown buckets (which previously
 # merged two simultaneous falls within the same 128 px cell into one alert).
 FALL_PERSON_IOU_MIN = 0.20
+FALL_BAGGAGE_OVERLAP_REJECT = 0.55      # reject fall box if mostly a bag
 
 # ── Restricted zone ──────────────────────────────────────────────────────────
 RESTRICTED_ZONE_ENABLED = True

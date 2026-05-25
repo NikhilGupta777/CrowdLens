@@ -61,6 +61,19 @@ class AnomalyDetector:
         return inter / union if union > 0 else 0.0
 
     @staticmethod
+    def _intersection_over_first(a: list[float], b: list[float]) -> float:
+        """Intersection area divided by the area of the first box."""
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        area_a = max(1.0, max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1))
+        return inter / area_a
+
+    @staticmethod
     def _point_in_polygon(px: float, py: float, points: list) -> bool:
         """Ray-casting point-in-polygon test for an arbitrary polygon."""
         if not points or len(points) < 3:
@@ -416,17 +429,24 @@ class AnomalyDetector:
         min_area_ratio = getattr(_cfg, "FALL_MIN_AREA_RATIO", 0.005)
         aspect_ratio_min = getattr(_cfg, "FALL_ASPECT_RATIO_MIN", 0.40)
         person_iou_min = float(getattr(_cfg, "FALL_PERSON_IOU_MIN", 0.20))
+        baggage_overlap_reject = float(getattr(_cfg, "FALL_BAGGAGE_OVERLAP_REJECT", 0.35))
         min_area = frame_area * min_area_ratio
 
         # Collect person track bboxes once for IoU association.
         person_boxes: list[tuple[int, list[float]]] = []
+        baggage_boxes: list[list[float]] = []
         for t in tracks:
-            if t.get("class_id") == 0:
+            if t.get("class_id") == 0 and not t.get("predicted"):
                 person_boxes.append((
                     int(t["id"]),
                     [float(t["x1"]), float(t["y1"]),
                      float(t["x2"]), float(t["y2"])],
                 ))
+            elif int(t.get("class_id", -1)) in _cfg.UNATTENDED_CLASSES:
+                baggage_boxes.append([
+                    float(t["x1"]), float(t["y1"]),
+                    float(t["x2"]), float(t["y2"]),
+                ])
 
         # Use class-level _iou helper (also used by the ghost cache).
         _iou = self._iou
@@ -443,7 +463,7 @@ class AnomalyDetector:
             area = fw * fh
 
             # Reject: top-of-frame (ceiling/wall objects)
-            if float(fy2) < _cfg.FRAME_HEIGHT * 0.25:
+            if float(fy2) < _cfg.FRAME_HEIGHT * 0.30:
                 continue
             # Reject: too small (uses config FALL_MIN_AREA_RATIO)
             if area < min_area:
@@ -471,6 +491,45 @@ class AnomalyDetector:
                     best_track_id = tid
             if best_track_iou < person_iou_min:
                 best_track_id = None
+
+            # Critical filter: reject fall boxes that have NO nearby person.
+            # The fall model frequently fires on ground textures, shadows,
+            # pavement patterns, and other scene elements. A real fall MUST
+            # have a person track nearby (either overlapping or within a
+            # reasonable distance). Without this, ground-level false positives
+            # accumulate persistence and fire as phantom fall alerts.
+            if best_track_id is None and person_boxes:
+                # Check if ANY person is within proximity of this fall box
+                fall_cx = (fx1 + fx2) / 2.0
+                fall_cy = (fy1 + fy2) / 2.0
+                fall_diag = float(np.sqrt(fw * fw + fh * fh))
+                min_person_dist = float("inf")
+                for _, pbox in person_boxes:
+                    pcx = (pbox[0] + pbox[2]) / 2.0
+                    pcy = (pbox[1] + pbox[3]) / 2.0
+                    dist = float(np.hypot(fall_cx - pcx, fall_cy - pcy))
+                    min_person_dist = min(min_person_dist, dist)
+                # Reject if no person is within 2x the fall box diagonal
+                # (generous threshold — a real fall is always near a person)
+                max_allowed_dist = max(200.0, fall_diag * 2.0)
+                if min_person_dist > max_allowed_dist:
+                    continue
+
+            # If there are NO person tracks at all in the scene, require
+            # higher confidence from the fall model to avoid ground FPs.
+            if best_track_id is None and not person_boxes:
+                if confidence < 0.60:
+                    continue
+
+            # Only reject fall boxes that overlap baggage when there is NO
+            # associated person track. If a person is falling near their bag,
+            # the person-track association above will have set best_track_id,
+            # and we should NOT reject the fall just because it overlaps a bag.
+            if best_track_id is None and any(
+                self._intersection_over_first(fbox, bbox) >= baggage_overlap_reject
+                for bbox in baggage_boxes
+            ):
+                continue
             if best_track_id is not None:
                 # Use the person track id as the cooldown key to keep simultaneous
                 # falls separate, while still allowing the spatial-cell fallback
@@ -792,34 +851,48 @@ class AnomalyDetector:
         min_cluster = max(2, int(getattr(
             _cfg, "OVERCROWDING_MIN_CLUSTER_SIZE", threshold,
         )))
-        for cluster in self._cluster_persons(person_tracks):
-            if cluster["size"] >= max(threshold, min_cluster):
-                cx, cy = cluster["centroid"]
-                bx1, by1, bx2, by2 = cluster["bbox"]
-                area_px2 = float(cluster["area_px2"])
-                # Density expressed as people per 1000 px² of the cluster
-                # bbox.  Picked so a tight 4-person huddle inside a 200x200
-                # box scores ~0.10 while 4 people spread across the whole
-                # 1280x720 frame scores ~0.004 — three orders of magnitude
-                # lower, which is the right operator signal.
-                density_per_kpx2 = round(
-                    cluster["size"] * 1000.0 / area_px2, 4
-                )
-                anomalies.append({
-                    "type": "overcrowding",
-                    "count": cluster["size"],
-                    "cluster_size": cluster["size"],
-                    "cluster_bbox": [
-                        int(bx1), int(by1), int(bx2), int(by2),
-                    ],
-                    "cluster_area_px2": int(area_px2),
-                    "density_per_kpx2": density_per_kpx2,
-                    "position": [cx, cy],
-                    "confidence": round(
-                        min(1.0, cluster["size"] / max(threshold, 1) / 2.0 + 0.5),
-                        2,
-                    ),
-                })
+
+        # Fallback: if total person count is well above threshold (2x),
+        # emit an overcrowding alert regardless of clustering. This handles
+        # wide-angle cameras where people are spread out but the scene is
+        # clearly overcrowded.
+        if len(person_tracks) >= threshold * 2:
+            all_cx = sum((float(t["x1"]) + float(t["x2"])) / 2.0 for t in person_tracks) / max(1, len(person_tracks))
+            all_cy = sum((float(t["y1"]) + float(t["y2"])) / 2.0 for t in person_tracks) / max(1, len(person_tracks))
+            anomalies.append({
+                "type": "overcrowding",
+                "count": len(person_tracks),
+                "cluster_size": len(person_tracks),
+                "position": [all_cx, all_cy],
+                "confidence": round(
+                    min(1.0, len(person_tracks) / max(threshold, 1) / 2.0 + 0.5),
+                    2,
+                ),
+            })
+        else:
+            for cluster in self._cluster_persons(person_tracks):
+                if cluster["size"] >= max(threshold, min_cluster):
+                    cx, cy = cluster["centroid"]
+                    bx1, by1, bx2, by2 = cluster["bbox"]
+                    area_px2 = float(cluster["area_px2"])
+                    density_per_kpx2 = round(
+                        cluster["size"] * 1000.0 / area_px2, 4
+                    )
+                    anomalies.append({
+                        "type": "overcrowding",
+                        "count": cluster["size"],
+                        "cluster_size": cluster["size"],
+                        "cluster_bbox": [
+                            int(bx1), int(by1), int(bx2), int(by2),
+                        ],
+                        "cluster_area_px2": int(area_px2),
+                        "density_per_kpx2": density_per_kpx2,
+                        "position": [cx, cy],
+                        "confidence": round(
+                            min(1.0, cluster["size"] / max(threshold, 1) / 2.0 + 0.5),
+                            2,
+                        ),
+                    })
 
         person_motion: dict[int, dict] = {}
 
@@ -834,8 +907,15 @@ class AnomalyDetector:
 
             w = max(1.0, float(track["x2"] - track["x1"]))
             h = max(1.0, float(track["y2"] - track["y1"]))
-            self.track_history[track_id].append((cx, cy, current_time, w, h))
-            self.track_history[track_id] = self.track_history[track_id][-20:]
+
+            # Only append to history if this is a real detection (not a Kalman
+            # prediction). Predicted positions are extrapolated and corrupt
+            # speed calculations when the real detection returns — producing
+            # false running alerts or missing actual running.
+            is_predicted = bool(track.get("predicted", False))
+            if not is_predicted:
+                self.track_history[track_id].append((cx, cy, current_time, w, h))
+                self.track_history[track_id] = self.track_history[track_id][-20:]
             history = self.track_history[track_id]
 
             if class_id == 0 and len(history) >= 5:

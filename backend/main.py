@@ -42,6 +42,7 @@ from backend.config import (
     UNATTENDED_OWNER_GRACE_TIME,
     FALL_PERSISTENCE_TIME,
     FALL_MODEL_CONFIDENCE_THRESHOLD,
+    FALL_BAGGAGE_OVERLAP_REJECT,
     RESTRICTED_ZONE_ENABLED,
     RESTRICTED_ZONE_MIN_DWELL,
     FIGHT_DETECTION_ENABLED,
@@ -136,6 +137,7 @@ current_config = {
     "unattended_owner_grace_time": UNATTENDED_OWNER_GRACE_TIME,
     "fall_persistence_time": FALL_PERSISTENCE_TIME,
     "fall_model_confidence_threshold": FALL_MODEL_CONFIDENCE_THRESHOLD,
+    "fall_baggage_overlap_reject": FALL_BAGGAGE_OVERLAP_REJECT,
     "restricted_zone_enabled": RESTRICTED_ZONE_ENABLED,
     "restricted_zone_min_dwell": RESTRICTED_ZONE_MIN_DWELL,
     "fight_detection_enabled": FIGHT_DETECTION_ENABLED,
@@ -185,6 +187,7 @@ _CONFIG_ALLOWED_ATTRS = frozenset(
         "FALL_MIN_AREA_RATIO",
         "FALL_ASPECT_RATIO_MIN",
         "FALL_PERSON_IOU_MIN",
+        "FALL_BAGGAGE_OVERLAP_REJECT",
         "RESTRICTED_ZONE_USE_FEET",
         "UNATTENDED_BYSTANDER_ATTENDS",
         "UNATTENDED_GHOST_TTL",
@@ -875,19 +878,28 @@ def _run_extra_detectors_sync(frame) -> dict:
 
     Called from thread pool executor so each detector can block without
     stalling the asyncio event loop. Only enabled detectors are invoked.
+    Short-circuits immediately if nothing is enabled to avoid thread overhead.
     """
+    ppe_on = current_config.get("ppe_detection_enabled") and is_ppe_model_ready()
+    face_on = current_config.get("face_detection_enabled") and is_face_model_ready()
+    lpr_on = current_config.get("lpr_detection_enabled") and is_lpr_model_ready()
+
+    # Fast path: nothing enabled, return empty immediately
+    if not ppe_on and not face_on and not lpr_on:
+        return {"ppe": [], "faces": [], "plates": []}
+
     results: dict = {"ppe": [], "faces": [], "plates": []}
 
-    if current_config.get("ppe_detection_enabled") and is_ppe_model_ready():
+    if ppe_on:
         conf = float(current_config.get("ppe_confidence_threshold", 0.40))
         results["ppe"] = detect_ppe(frame, conf_override=conf)
 
-    if current_config.get("face_detection_enabled") and is_face_model_ready():
+    if face_on:
         scale = float(current_config.get("face_scale_factor", 1.3))
         neighbors = int(current_config.get("face_min_neighbors", 5))
         results["faces"] = detect_faces_cv(frame, scale_factor=scale, min_neighbors=neighbors)
 
-    if current_config.get("lpr_detection_enabled") and is_lpr_model_ready():
+    if lpr_on:
         conf = float(current_config.get("lpr_confidence_threshold", 0.40))
         results["plates"] = detect_plates(frame, conf_override=conf)
 
@@ -1025,6 +1037,14 @@ async def video_processing_loop():
             f, conf_override=current_config["fall_model_confidence_threshold"]
         )
 
+    # Run fall + extra detectors every N frames to avoid overloading CPU and
+    # causing frame skips. YOLO runs every frame for responsive person/object
+    # tracking; the heavier secondary models run periodically.
+    _FALL_DETECT_INTERVAL = 3   # every 3rd frame
+    _EXTRA_DETECT_INTERVAL = 5  # every 5th frame
+    _last_fall_detections: list = []
+    _last_extra_anomalies: list = []
+
     try:
         while True:
             ret, frame = cap.read()
@@ -1035,6 +1055,8 @@ async def video_processing_loop():
                 tracker.reset()
                 anomaly_detector = AnomalyDetector()
                 playback_start = time.time()
+                _last_fall_detections = []
+                _last_extra_anomalies = []
                 continue
 
             frame_num += 1
@@ -1048,10 +1070,13 @@ async def video_processing_loop():
             now = time.time()
             drift = now - target_time
 
-            # If we are running behind by more than one frame interval,
-            # skip this frame (grab-only, no decode cost) to catch up.
-            if drift > frame_interval:
-                frames_to_skip = min(int(drift / frame_interval), 15)
+            # On CPU inference (~500ms/frame), we can never keep up with native
+            # FPS. Instead of skipping frames (which causes "late" detections),
+            # just process every frame as fast as possible. The frontend renders
+            # whatever arrives over WebSocket. Only skip if we're EXTREMELY
+            # behind (>2 seconds) to avoid infinite backlog on very long videos.
+            if drift > 2.0:
+                frames_to_skip = min(int(drift / frame_interval), 5)
                 for _ in range(frames_to_skip):
                     if not cap.grab():
                         break
@@ -1063,22 +1088,26 @@ async def video_processing_loop():
                 await asyncio.sleep(0)
                 continue
 
-            # Wait until it is time to display this frame
-            wait = target_time - time.time()
-            if wait > 0.001:
-                await asyncio.sleep(wait)
+            # Yield to event loop briefly so WebSocket sends aren't starved
+            await asyncio.sleep(0)
 
             frame_resized = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
 
             # Run YOLO in thread pool — keeps the asyncio event loop responsive
             detections = await loop.run_in_executor(None, _detect_sync, frame_resized)
-            # Run fall model on source-resolution frame for better posture fidelity.
-            fall_detections = await loop.run_in_executor(
-                None, _fall_detect_sync, frame
-            )
-            fall_detections = _scale_fall_detections_to_canvas(
-                fall_detections, frame.shape[1], frame.shape[0]
-            )
+
+            # Run fall model periodically (expensive) — reuse last result otherwise
+            if frame_num % _FALL_DETECT_INTERVAL == 0:
+                fall_detections = await loop.run_in_executor(
+                    None, _fall_detect_sync, frame
+                )
+                fall_detections = _scale_fall_detections_to_canvas(
+                    fall_detections, frame.shape[1], frame.shape[0]
+                )
+                _last_fall_detections = fall_detections
+            else:
+                fall_detections = _last_fall_detections
+
             raw_tracks = tracker.update(detections)
 
             now = time.time()
@@ -1089,13 +1118,13 @@ async def video_processing_loop():
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
             )
-            # PPE / Face / LPR detections (run in thread pool)
-            extra = await loop.run_in_executor(
-                None, _run_extra_detectors_sync, frame_resized
-            )
-            anomalies.extend(
-                _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
-            )
+            # PPE / Face / LPR detections — run periodically to save CPU
+            if frame_num % _EXTRA_DETECT_INTERVAL == 0:
+                extra = await loop.run_in_executor(
+                    None, _run_extra_detectors_sync, frame_resized
+                )
+                _last_extra_anomalies = _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
+            anomalies.extend(_last_extra_anomalies)
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -1367,6 +1396,8 @@ async def stream_processing_loop(url: str):
         frame_q, reader_stop, reader_thread, reader_state = _start_reader(proc)
         print(f"[stream] FFmpeg opened: {_redact_url(source_input)}")
         frames_processed = 0
+        _stream_last_fall: list = []
+        _stream_last_extra: list = []
 
         while True:
             timeout_secs = FIRST_FRAME_TIMEOUT_SECS if frames_processed == 0 else 30
@@ -1408,6 +1439,8 @@ async def stream_processing_loop(url: str):
                         tracker = _build_tracker()
                         anomaly_detector = AnomalyDetector()
                         frames_processed = 0
+                        _stream_last_fall = []
+                        _stream_last_extra = []
                         proc = await loop.run_in_executor(None, _start_proc)
                         frame_q, reader_stop, reader_thread, reader_state = (
                             _start_reader(proc)
@@ -1479,6 +1512,8 @@ async def stream_processing_loop(url: str):
                 tracker = _build_tracker()
                 anomaly_detector = AnomalyDetector()
                 frames_processed = 0
+                _stream_last_fall = []
+                _stream_last_extra = []
                 proc = await loop.run_in_executor(None, _start_proc)
                 frame_q, reader_stop, reader_thread, reader_state = _start_reader(proc)
                 print(f"[stream] FFmpeg opened: {_redact_url(source_input)}")
@@ -1489,13 +1524,18 @@ async def stream_processing_loop(url: str):
             detections = await loop.run_in_executor(
                 None, detector.detect, frame, STREAM_CONFIDENCE
             )
-            fall_detections = await loop.run_in_executor(
-                None,
-                lambda f=frame: detect_falls(
-                    f, conf_override=current_config["fall_model_confidence_threshold"]
-                ),
-            )
-            fall_detections = _scale_fall_detections_to_canvas(fall_detections, W, H)
+            # Fall detection every 3rd frame to keep stream responsive
+            if frames_processed % 3 == 0:
+                fall_detections = await loop.run_in_executor(
+                    None,
+                    lambda f=frame: detect_falls(
+                        f, conf_override=current_config["fall_model_confidence_threshold"]
+                    ),
+                )
+                fall_detections = _scale_fall_detections_to_canvas(fall_detections, W, H)
+                _stream_last_fall = fall_detections
+            else:
+                fall_detections = _stream_last_fall
             raw_tracks = tracker.update(detections)
 
             now = time.time()
@@ -1506,11 +1546,13 @@ async def stream_processing_loop(url: str):
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
             )
-            # PPE / Face / LPR detections (run in thread pool)
-            extra = await loop.run_in_executor(
-                None, _run_extra_detectors_sync, frame
-            )
-            anomalies.extend(_build_extra_anomalies(extra, W, H))
+            # PPE / Face / LPR detections — run periodically
+            if frames_processed % 5 == 0:
+                extra = await loop.run_in_executor(
+                    None, _run_extra_detectors_sync, frame
+                )
+                _stream_last_extra = _build_extra_anomalies(extra, W, H)
+            anomalies.extend(_stream_last_extra)
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -1583,6 +1625,9 @@ async def webcam_processing_loop():
 
     print("[webcam] Webcam processing loop started")
     loop = asyncio.get_event_loop()
+    _wcam_frame_num = 0
+    _wcam_last_fall: list = []
+    _wcam_last_extra: list = []
 
     try:
         while True:
@@ -1602,6 +1647,7 @@ async def webcam_processing_loop():
             if frame is None:
                 continue
 
+            _wcam_frame_num += 1
             src_frame = frame
             frame = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
             # Run YOLO in thread pool — keeps the asyncio event loop responsive.
@@ -1610,15 +1656,21 @@ async def webcam_processing_loop():
             detections = await loop.run_in_executor(
                 None, lambda f=frame: detector.detect(f, conf_override=WEBCAM_DETECTION_CONFIDENCE)
             )
-            fall_detections = await loop.run_in_executor(
-                None,
-                lambda f=src_frame: detect_falls(
-                    f, conf_override=current_config["fall_model_confidence_threshold"]
-                ),
-            )
-            fall_detections = _scale_fall_detections_to_canvas(
-                fall_detections, src_frame.shape[1], src_frame.shape[0]
-            )
+            # Fall detection every 3rd frame to reduce CPU load
+            if _wcam_frame_num % 3 == 0:
+                fall_detections = await loop.run_in_executor(
+                    None,
+                    lambda f=src_frame: detect_falls(
+                        f, conf_override=current_config["fall_model_confidence_threshold"]
+                    ),
+                )
+                fall_detections = _scale_fall_detections_to_canvas(
+                    fall_detections, src_frame.shape[1], src_frame.shape[0]
+                )
+                _wcam_last_fall = fall_detections
+            else:
+                fall_detections = _wcam_last_fall
+
             raw_tracks = tracker.update(detections)
 
             now = time.time()
@@ -1629,13 +1681,13 @@ async def webcam_processing_loop():
                 fall_detections=fall_detections,
                 fall_persistence_time=current_config["fall_persistence_time"],
             )
-            # PPE / Face / LPR detections (run in thread pool)
-            extra = await loop.run_in_executor(
-                None, _run_extra_detectors_sync, frame
-            )
-            anomalies.extend(
-                _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
-            )
+            # PPE / Face / LPR detections — run periodically to save CPU
+            if _wcam_frame_num % 5 == 0:
+                extra = await loop.run_in_executor(
+                    None, _run_extra_detectors_sync, frame
+                )
+                _wcam_last_extra = _build_extra_anomalies(extra, INFER_WIDTH, INFER_HEIGHT)
+            anomalies.extend(_wcam_last_extra)
             tracks = _finalize_tracks(tracks, anomalies)
 
             payload = build_frame_payload(
@@ -2237,6 +2289,7 @@ class ConfigUpdate(BaseModel):
     fall_persistence_time: float | None = None
     fall_model_confidence_threshold: float | None = None
     fall_person_iou_min: float | None = None
+    fall_baggage_overlap_reject: float | None = None
     fall_alert_hold_time: float | None = None
     restricted_zone_enabled: bool | None = None
     restricted_zone_min_dwell: float | None = None
@@ -2308,6 +2361,8 @@ def update_config(body: ConfigUpdate):
         current_config["fall_model_confidence_threshold"] = _clamp(body.fall_model_confidence_threshold, 0.05, 0.95)
     if body.fall_person_iou_min is not None:
         current_config["fall_person_iou_min"] = _clamp(body.fall_person_iou_min, 0.0, 0.95)
+    if body.fall_baggage_overlap_reject is not None:
+        current_config["fall_baggage_overlap_reject"] = _clamp(body.fall_baggage_overlap_reject, 0.0, 1.0)
     if body.restricted_zone_enabled is not None:
         current_config["restricted_zone_enabled"] = bool(body.restricted_zone_enabled)
     if body.restricted_zone_min_dwell is not None:

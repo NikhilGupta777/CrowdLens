@@ -115,22 +115,22 @@ def _same_baggage_object(box_a: list[float], box_b: list[float]) -> bool:
     """
     iou = _iou(box_a, box_b)
     # Strong overlap: clearly the same object regardless of size.
-    if iou >= 0.35:
+    if iou >= 0.25:
         return True
 
     # Limit the fallback to small boxes where the YOLO bbox is most jittery.
     smaller_area = min(_box_area(box_a), _box_area(box_b))
-    if smaller_area > 4000:  # ~63x63 px — not a tiny bag
+    if smaller_area > 5000:  # ~70x70 px — not a tiny bag
         return False
 
     # Require *some* overlap before the proximity fallback engages. Without
     # this, two disjoint small bags sitting side by side merge into one;
     # with it, the boxes must still actually touch.
-    if iou < 0.10:
+    if iou < 0.08:
         return False
 
     max_diag = max(np.sqrt(_box_area(box_a)), np.sqrt(_box_area(box_b)))
-    return _center_distance(box_a, box_b) <= max(35.0, 0.50 * max_diag)
+    return _center_distance(box_a, box_b) <= max(40.0, 0.55 * max_diag)
 
 
 def _dedupe_and_canonicalize_baggage(detections: list[dict]) -> list[dict]:

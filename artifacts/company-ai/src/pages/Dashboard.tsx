@@ -220,6 +220,7 @@ export default function Dashboard() {
 
   const videoElRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const uploadedVideoUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const tracks = frame?.tracks ?? [];
@@ -250,6 +251,15 @@ export default function Dashboard() {
     sourceMode === "webcam",
   );
 
+  useEffect(() => {
+    return () => {
+      if (uploadedVideoUrlRef.current) {
+        URL.revokeObjectURL(uploadedVideoUrlRef.current);
+        uploadedVideoUrlRef.current = null;
+      }
+    };
+  }, []);
+
   // Poll video status — no dependencies so interval is stable
   useEffect(() => {
     const poll = async () => {
@@ -259,6 +269,10 @@ export default function Dashboard() {
         const data = await res.json();
         setVideoStatus(prev => {
           if (prev?.mode === "processing" && data.mode !== "processing") {
+            if (videoElRef.current && uploadedVideoUrlRef.current) {
+              videoElRef.current.pause();
+              videoElRef.current.currentTime = 0;
+            }
             setSourceMode(s => s === "video" ? "idle" : s);
           }
           return data;
@@ -405,6 +419,7 @@ export default function Dashboard() {
         vid.autoplay = true;
         videoElRef.current = vid;
       }
+      videoElRef.current.removeAttribute("src");
       videoElRef.current.srcObject = stream;
       await videoElRef.current.play();
 
@@ -449,7 +464,10 @@ export default function Dashboard() {
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
     if (videoElRef.current) {
+      videoElRef.current.pause();
       videoElRef.current.srcObject = null;
+      videoElRef.current.removeAttribute("src");
+      videoElRef.current.load();
     }
     // Stop local relay if active
     localRelay.stop();
@@ -471,6 +489,11 @@ export default function Dashboard() {
     setUploadProgress(0);
     setUploadError(null);
 
+    if (uploadedVideoUrlRef.current) {
+      URL.revokeObjectURL(uploadedVideoUrlRef.current);
+    }
+    uploadedVideoUrlRef.current = URL.createObjectURL(file);
+
     const form = new FormData();
     form.append("file", file);
 
@@ -487,6 +510,10 @@ export default function Dashboard() {
       if (xhr.status >= 200 && xhr.status < 300) {
         setUploadProgress(100);
       } else {
+        if (uploadedVideoUrlRef.current) {
+          URL.revokeObjectURL(uploadedVideoUrlRef.current);
+          uploadedVideoUrlRef.current = null;
+        }
         try {
           const data = JSON.parse(xhr.responseText);
           setUploadError(data.detail ?? `Upload failed (HTTP ${xhr.status})`);
@@ -498,11 +525,19 @@ export default function Dashboard() {
 
     xhr.addEventListener("error", () => {
       setUploading(false);
+      if (uploadedVideoUrlRef.current) {
+        URL.revokeObjectURL(uploadedVideoUrlRef.current);
+        uploadedVideoUrlRef.current = null;
+      }
       setUploadError("Network error — upload could not reach the server. Check your connection.");
     });
 
     xhr.addEventListener("timeout", () => {
       setUploading(false);
+      if (uploadedVideoUrlRef.current) {
+        URL.revokeObjectURL(uploadedVideoUrlRef.current);
+        uploadedVideoUrlRef.current = null;
+      }
       setUploadError("Upload timed out. The file may be too large for the current connection.");
     });
 
@@ -523,6 +558,10 @@ export default function Dashboard() {
 
   const stopVideoProcessing = async () => {
     await fetch("/api/video/stop", { method: "POST" });
+    if (videoElRef.current && uploadedVideoUrlRef.current) {
+      videoElRef.current.pause();
+      videoElRef.current.currentTime = 0;
+    }
     setSourceMode("idle");
   };
 
