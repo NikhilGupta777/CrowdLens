@@ -1065,18 +1065,27 @@ async def video_processing_loop():
                 round((frame_num / total * 100), 1) if total > 0 else 0
             )
 
-            # Target wall-clock time for this frame based on native video FPS
+            # ── Real-time pacing: skip frames to avoid slow-motion ────────
+            # The loop processes every frame it reads, but YOLO inference
+            # takes 20-80ms per frame. For a 30fps video that's borderline;
+            # for 60fps it's guaranteed slow-motion. Instead of processing
+            # every frame and falling behind, skip ahead to stay in sync
+            # with wall-clock time.
             target_time = playback_start + frame_num * frame_interval
             now = time.time()
             drift = now - target_time
 
-            # On CPU inference (~500ms/frame), we can never keep up with native
-            # FPS. Instead of skipping frames (which causes "late" detections),
-            # just process every frame as fast as possible. The frontend renders
-            # whatever arrives over WebSocket. Only skip if we're EXTREMELY
-            # behind (>2 seconds) to avoid infinite backlog on very long videos.
-            if drift > 2.0:
-                frames_to_skip = min(int(drift / frame_interval), 5)
+            if drift < -frame_interval:
+                # We're AHEAD of schedule (processing faster than video FPS).
+                # Sleep to pace the output at native video speed so the
+                # frontend doesn't receive a burst of frames.
+                await asyncio.sleep(-drift)
+            elif drift > frame_interval * 2:
+                # We're BEHIND schedule. Skip frames to catch up to real-time.
+                # This prevents slow-motion playback. The tracker and anomaly
+                # detector only see processed frames, which is fine — they
+                # adapt to whatever frame rate they receive.
+                frames_to_skip = int(drift / frame_interval)
                 for _ in range(frames_to_skip):
                     if not cap.grab():
                         break
@@ -1085,6 +1094,8 @@ async def video_processing_loop():
                 video_status["progress"] = (
                     round((frame_num / total * 100), 1) if total > 0 else 0
                 )
+                # Re-anchor playback start so we don't keep skipping
+                playback_start = time.time() - frame_num * frame_interval
                 await asyncio.sleep(0)
                 continue
 
@@ -1096,13 +1107,16 @@ async def video_processing_loop():
             # Run YOLO in thread pool — keeps the asyncio event loop responsive
             detections = await loop.run_in_executor(None, _detect_sync, frame_resized)
 
-            # Run fall model periodically (expensive) — reuse last result otherwise
+            # Run fall model periodically (expensive) — reuse last result otherwise.
+            # Use frame_resized (640×360) instead of full-res frame: the fall
+            # model internally resizes to 640×640 anyway, so passing a 1080p
+            # frame just wastes time on a redundant large-image transfer.
             if frame_num % _FALL_DETECT_INTERVAL == 0:
                 fall_detections = await loop.run_in_executor(
-                    None, _fall_detect_sync, frame
+                    None, _fall_detect_sync, frame_resized
                 )
                 fall_detections = _scale_fall_detections_to_canvas(
-                    fall_detections, frame.shape[1], frame.shape[0]
+                    fall_detections, INFER_WIDTH, INFER_HEIGHT
                 )
                 _last_fall_detections = fall_detections
             else:
@@ -1656,16 +1670,18 @@ async def webcam_processing_loop():
             detections = await loop.run_in_executor(
                 None, lambda f=frame: detector.detect(f, conf_override=WEBCAM_DETECTION_CONFIDENCE)
             )
-            # Fall detection every 3rd frame to reduce CPU load
+            # Fall detection every 3rd frame to reduce CPU load.
+            # Use resized frame (640×360) — fall model resizes to 640×640
+            # internally, so passing full webcam resolution is wasted work.
             if _wcam_frame_num % 3 == 0:
                 fall_detections = await loop.run_in_executor(
                     None,
-                    lambda f=src_frame: detect_falls(
+                    lambda f=frame: detect_falls(
                         f, conf_override=current_config["fall_model_confidence_threshold"]
                     ),
                 )
                 fall_detections = _scale_fall_detections_to_canvas(
-                    fall_detections, src_frame.shape[1], src_frame.shape[0]
+                    fall_detections, INFER_WIDTH, INFER_HEIGHT
                 )
                 _wcam_last_fall = fall_detections
             else:
