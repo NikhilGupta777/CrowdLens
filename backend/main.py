@@ -772,7 +772,7 @@ def _build_tracker():
 
 async def _broadcast(message: str):
     dead = []
-    for ws in connected_clients:
+    for ws in list(connected_clients):  # snapshot: avoid RuntimeError if set mutates during await
         try:
             await ws.send_text(message)
         except Exception:
@@ -1109,6 +1109,14 @@ async def video_processing_loop():
 
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        # Surface unexpected failures (decode errors, OOM, etc.) instead of
+        # dying as an unretrieved task exception that leaves the UI stuck on
+        # "Video Running". Flipping mode off "processing" lets the frontend
+        # status poll auto-reset to idle.
+        video_status["error"] = f"Video processing stopped unexpectedly: {e}"
+        video_status["mode"] = "ready"
+        print(f"[video] processing loop error: {e}")
     finally:
         cap.release()
         video_status["progress"] = 0
@@ -1516,6 +1524,12 @@ async def stream_processing_loop(url: str):
 
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        # Surface unexpected failures instead of dying as an unretrieved task
+        # exception. The finally block clears active/url so the frontend poll
+        # (resets on error && !active) returns the UI to idle.
+        stream_status["error"] = f"Stream processing stopped unexpectedly: {e}"
+        print(f"[stream] processing loop error: {e}")
     finally:
         if proc and proc.poll() is None:
             proc.kill()
@@ -1633,6 +1647,11 @@ async def webcam_processing_loop():
 
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        # Surface unexpected failures instead of dying as an unretrieved task
+        # exception that silently freezes the webcam view.
+        webcam_status["error"] = f"Webcam processing stopped unexpectedly: {e}"
+        print(f"[webcam] processing loop error: {e}")
     finally:
         webcam_status["active"] = False
         print("[webcam] Webcam processing loop stopped")
@@ -1734,6 +1753,14 @@ async def lifespan(app: FastAPI):
     for entry in alert_history:
         if entry.get("escalated"):
             _escalated_alert_ids.add(entry["id"])
+    # Resume the alert-id counter past the highest persisted id. Without this
+    # it restarts from 0 every launch and new alerts reuse ids already present
+    # in the loaded history — colliding in the deque, the DB, and the React
+    # `key` of the AlertHistory table (so ack/escalation can target the wrong
+    # row).
+    global _alert_id_counter
+    if alert_history:
+        _alert_id_counter = max(int(e.get("id") or 0) for e in alert_history)
     thread = threading.Thread(target=_download_model, daemon=True)
     thread.start()
     fall_thread = threading.Thread(target=_download_fall_model, daemon=True)
