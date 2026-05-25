@@ -21,11 +21,6 @@ node_modules
 *.sublime-workspace
 
 # IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
 
 # misc
 /.sass-cache
@@ -65,3 +60,7 @@ backend/*.db-wal
 crowdlens_upload.mp4
 
 .env
+temp_auto_push.bat
+temp_interactive_push.bat
+branch_structure.json
+.gitignore

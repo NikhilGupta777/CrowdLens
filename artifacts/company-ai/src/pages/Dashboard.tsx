@@ -233,26 +233,6 @@ export default function Dashboard() {
   const stats = frame?.stats ?? null;
   const displayMode = (frame?.mode as SourceMode) ?? sourceMode;
 
-  // Start local video playback when the backend sends its first detection
-  // frame. This syncs the video with detection boxes — the video won't run
-  // ahead during the 2-3 second backend startup delay.
-  const videoStartedRef = useRef(false);
-  useEffect(() => {
-    if (
-      frame?.mode === "video" &&
-      !videoStartedRef.current &&
-      videoElRef.current &&
-      uploadedVideoUrlRef.current
-    ) {
-      videoStartedRef.current = true;
-      videoElRef.current.currentTime = 0;
-      videoElRef.current.play().catch(() => {});
-    }
-    if (frame?.mode !== "video" && videoStartedRef.current) {
-      videoStartedRef.current = false;
-    }
-  }, [frame?.mode]);
-
   useAlertSound(anomalies, soundEnabled);
   const { permission: notifPermission, enabled: notifEnabled, requestPermission } = useNotifications(anomalies);
 
@@ -585,10 +565,7 @@ export default function Dashboard() {
         vid.src = uploadedVideoUrlRef.current;
         vid.loop = true;
         vid.currentTime = 0;
-        // DON'T play yet — wait for the first backend detection frame
-        // to arrive so video and detection boxes start in sync.
-        // The useEffect below watches for frame?.mode === "video"
-        // and triggers play at that point.
+        await vid.play().catch(() => {});
       }
       setSourceMode("video");
     }
