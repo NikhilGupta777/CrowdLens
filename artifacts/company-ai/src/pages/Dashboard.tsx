@@ -552,6 +552,21 @@ export default function Dashboard() {
       const d = await res.json();
       setUploadError(d.detail);
     } else {
+      if (uploadedVideoUrlRef.current) {
+        if (!videoElRef.current) {
+          const vid = document.createElement("video");
+          vid.muted = true;
+          vid.playsInline = true;
+          videoElRef.current = vid;
+        }
+        const vid = videoElRef.current;
+        vid.pause();
+        vid.srcObject = null;
+        vid.src = uploadedVideoUrlRef.current;
+        vid.loop = true;
+        vid.currentTime = 0;
+        await vid.play().catch(() => {});
+      }
       setSourceMode("video");
     }
   };

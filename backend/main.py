@@ -1065,27 +1065,18 @@ async def video_processing_loop():
                 round((frame_num / total * 100), 1) if total > 0 else 0
             )
 
-            # ── Real-time pacing: skip frames to avoid slow-motion ────────
-            # The loop processes every frame it reads, but YOLO inference
-            # takes 20-80ms per frame. For a 30fps video that's borderline;
-            # for 60fps it's guaranteed slow-motion. Instead of processing
-            # every frame and falling behind, skip ahead to stay in sync
-            # with wall-clock time.
+            # Target wall-clock time for this frame based on native video FPS
             target_time = playback_start + frame_num * frame_interval
             now = time.time()
             drift = now - target_time
 
-            if drift < -frame_interval:
-                # We're AHEAD of schedule (processing faster than video FPS).
-                # Sleep to pace the output at native video speed so the
-                # frontend doesn't receive a burst of frames.
-                await asyncio.sleep(-drift)
-            elif drift > frame_interval * 2:
-                # We're BEHIND schedule. Skip frames to catch up to real-time.
-                # This prevents slow-motion playback. The tracker and anomaly
-                # detector only see processed frames, which is fine — they
-                # adapt to whatever frame rate they receive.
-                frames_to_skip = int(drift / frame_interval)
+            # The frontend plays the video locally at native FPS for smooth
+            # playback. The backend processes frames as fast as it can and
+            # sends detection data over WebSocket. The boxes overlay the
+            # locally-playing video. We only skip if extremely behind to
+            # avoid infinite backlog on very long videos.
+            if drift > 2.0:
+                frames_to_skip = min(int(drift / frame_interval), 5)
                 for _ in range(frames_to_skip):
                     if not cap.grab():
                         break
@@ -1094,8 +1085,6 @@ async def video_processing_loop():
                 video_status["progress"] = (
                     round((frame_num / total * 100), 1) if total > 0 else 0
                 )
-                # Re-anchor playback start so we don't keep skipping
-                playback_start = time.time() - frame_num * frame_interval
                 await asyncio.sleep(0)
                 continue
 

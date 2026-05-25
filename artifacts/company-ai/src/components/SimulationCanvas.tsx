@@ -365,10 +365,11 @@ function SimulationCanvas({
 
       const vid = videoRef.current;
       const hasLiveWebcam = cameraMode === "webcam" && vid && vid.readyState >= 2;
+      const hasLocalVideo = sourceMode === "video" && vid && !vid.srcObject && vid.readyState >= 2;
       const hasBackendFrame = backendImgRef.current?.complete && backendImgRef.current.naturalWidth > 0;
       const isActiveMode = sourceMode === "video" || sourceMode === "stream" || sourceMode === "webcam";
 
-      if (hasLiveWebcam) {
+      if (hasLiveWebcam || hasLocalVideo) {
         ctx.drawImage(vid, 0, 0, W, H);
         ctx.fillStyle = "rgba(0,0,0,0.15)";
         ctx.fillRect(0, 0, W, H);
