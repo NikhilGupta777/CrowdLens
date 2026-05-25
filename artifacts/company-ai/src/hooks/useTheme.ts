@@ -7,7 +7,7 @@ const STORAGE_KEY = "crowdlens_theme_mode";
 export function useTheme() {
   const [theme, setTheme] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return stored === "dark" ? "dark" : "light";
+    return stored === "light" ? "light" : "dark";
   });
 
   useEffect(() => {
