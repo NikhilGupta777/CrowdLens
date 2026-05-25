@@ -12,7 +12,6 @@ dependencies = [
     "onnxruntime-gpu>=1.16.0",
     "onnxslim>=0.1.90",
     "openai>=1.0.0",
-    "opencv-python>=4.13.0.92",
     "opencv-python-headless>=4.8.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",

@@ -161,8 +161,13 @@ export function useSimulation() {
         // Skip binary messages (not expected but defensive)
         if (typeof e.data !== "string") return;
         try {
-          const data: FrameData = JSON.parse(e.data);
-          scheduleUpdate(data);
+          const data = JSON.parse(e.data);
+          // The backend also broadcasts control messages on this socket
+          // (e.g. {type:"escalation", escalated_ids:[...]}). Those have no
+          // tracks/stats, so passing them to setFrame would blank the live
+          // view. Only process actual detection frames.
+          if (!data || !Array.isArray(data.tracks)) return;
+          scheduleUpdate(data as FrameData);
         } catch {
           // Malformed JSON — drop frame silently
         }
