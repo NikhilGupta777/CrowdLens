@@ -107,8 +107,8 @@ UNATTENDED_GHOST_TTL = 8.0
 UNATTENDED_GHOST_CELL_PX = 96            # spatial bucket size for ghost lookup
 
 # ── Fall detection ───────────────────────────────────────────────────────────
-FALL_PERSISTENCE_TIME = 1.2
-FALL_MODEL_CONFIDENCE_THRESHOLD = 0.45
+FALL_PERSISTENCE_TIME = 2.5
+FALL_MODEL_CONFIDENCE_THRESHOLD = 0.55
 # How long a confirmed fall stays "active" after the model stops emitting
 # the bbox. During this window the alert is still surfaced so the operator
 # can react even if the fall detector blinks (occlusion / pose change).
@@ -117,7 +117,9 @@ FALL_ALERT_HOLD_TIME = 3.0
 # "fallen" — these checks reject obvious false positives without rejecting
 # valid forward-collapse / kneeling falls.
 FALL_MIN_AREA_RATIO = 0.008              # min bbox area / frame area (~0.8%)
-FALL_ASPECT_RATIO_MIN = 0.55             # min width/height of a fallen box
+FALL_ASPECT_RATIO_MIN = 0.70             # min width/height — a fallen person
+                                          # is horizontal (wide), so reject
+                                          # boxes that are nearly upright
 # Minimum IoU between a fall bbox and a person track bbox to associate the
 # fall with that track id. Helps distinguish concurrent falls and avoids
 # all falls falling back to spatial-cell cooldown buckets (which previously

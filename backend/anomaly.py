@@ -492,6 +492,26 @@ class AnomalyDetector:
             if best_track_iou < person_iou_min:
                 best_track_id = None
 
+            # ── Pose-change filter ──────────────────────────────────────────
+            # A real fall means the person TRANSITIONED from upright to
+            # horizontal. If the matched person was never upright in recent
+            # history (e.g. they've been bending/crouching the whole time),
+            # this is likely a false positive from the model misclassifying
+            # a bending or crouching pose.
+            if best_track_id is not None:
+                hist = self.track_history.get(best_track_id, [])
+                # Check the last ~15 history entries for an upright frame.
+                # Each entry is (cx, cy, time, w, h). Upright = h > w * 1.2
+                recent_hist = hist[-15:]
+                was_upright = any(
+                    len(e) >= 5 and e[4] > e[3] * 1.2
+                    for e in recent_hist
+                )
+                if not was_upright and len(recent_hist) >= 5:
+                    # Person has never been upright recently — skip this
+                    # fall detection (likely bending/crouching, not a fall)
+                    continue
+
             # Critical filter: reject fall boxes that have NO nearby person.
             # The fall model frequently fires on ground textures, shadows,
             # pavement patterns, and other scene elements. A real fall MUST
@@ -518,7 +538,7 @@ class AnomalyDetector:
             # If there are NO person tracks at all in the scene, require
             # higher confidence from the fall model to avoid ground FPs.
             if best_track_id is None and not person_boxes:
-                if confidence < 0.60:
+                if confidence < 0.70:
                     continue
 
             # Only reject fall boxes that overlap baggage when there is NO

@@ -161,6 +161,12 @@ def detect_falls(frame: np.ndarray, conf_override: float | None = None) -> list[
         if box_w > box_h * 4.0:
             continue
 
+        # Sanity filter 4: reject nearly-upright boxes. A fallen person
+        # produces a horizontal box (width > height). If height > width,
+        # the person is standing/walking and the model is wrong.
+        if box_h > box_w * 1.3:
+            continue
+
         fallen_results.append({
             "bbox": [float(x1), float(y1), float(x2), float(y2)],
             "confidence": round(confidence, 3),
