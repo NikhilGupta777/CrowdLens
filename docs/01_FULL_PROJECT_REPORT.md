@@ -550,4 +550,4 @@ The system demonstrates that effective surveillance automation is achievable wit
 
 ---
 *Report generated for CrowdLens Campus AI Monitor Project*
-*Repository: NikhilGupta777/Gemini-Clone*
+*Repository: NikhilGupta777/CrowdLens*

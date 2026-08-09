@@ -388,7 +388,7 @@ A complete, working, end-to-end intelligent surveillance system that bridges the
 **Questions?**
 
 **Links:**
-- Repository: github.com/NikhilGupta777/Gemini-Clone
+- Repository: github.com/NikhilGupta777/CrowdLens
 - Tech: Python 3.11 + FastAPI + React 19 + YOLOv11m + SORT
 
 ---

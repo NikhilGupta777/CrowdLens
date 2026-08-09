@@ -122,8 +122,8 @@ flowchart TD
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/NikhilGupta777/Gemini-Clone.git
-   cd Gemini-Clone
+   git clone https://github.com/NikhilGupta777/CrowdLens.git
+   cd CrowdLens
    ```
 
 2. **Backend Setup (Python & Dependencies)**
@@ -238,7 +238,7 @@ Comprehensive technical, architectural, and research publications are indexed in
 ## 🤝 Contributing
 
 Contributions are welcome! Please follow these steps:
-1. Fork the repo (`https://github.com/NikhilGupta777/Gemini-Clone`)
+1. Fork the repo (`https://github.com/NikhilGupta777/CrowdLens`)
 2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
