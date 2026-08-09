@@ -13,7 +13,7 @@ set ROOT=%~dp0
 set ROOT=%ROOT:~0,-1%
 
 echo  [1/2] Starting Backend (FastAPI on port 8080)...
-start "CrowdLens Backend" cmd /k "cd /d "%ROOT%" && .venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8080 --reload"
+start "CrowdLens Backend" cmd /k "cd /d "%ROOT%" && (if exist .venv\Scripts\python.exe (.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8080 --reload) else (uv run uvicorn backend.main:app --host 127.0.0.1 --port 8080 --reload))"
 
 echo  [2/2] Starting Frontend (Vite on port 5173)...
 start "CrowdLens Frontend" cmd /k "cd /d "%ROOT%\artifacts\company-ai" && pnpm run dev"
