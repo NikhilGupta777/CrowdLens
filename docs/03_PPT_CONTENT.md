@@ -9,11 +9,10 @@
 
 **Subtitle:** Leveraging YOLOv11m + SORT Tracking + Behavioural Analysis for Intelligent Security Monitoring
 
-**By:** [Your Names]
-**Guide:** [Faculty Name]
-**Department:** [Department Name]
+**Author:** CrowdLens Open-Source Team
+**Domain:** Computer Vision & AI Security Systems
+**Department:** Intelligent Surveillance Systems Group
 **Institution:** Campus AI Surveillance & Computer Vision Research Group
-**Date:** [Date]
 
 ---
 

@@ -3,6 +3,7 @@
 <div align="center">
 
 ![CrowdLens Banner](https://img.shields.io/badge/CrowdLens-Campus_AI_Monitor-7C3AED?style=for-the-badge&logo=shield&logoColor=white)
+[![Live Demo](https://img.shields.io/badge/%F0%9F%9A%80_Live_Demo-company--ai--steel.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://company-ai-steel.vercel.app)
 
 **An Intelligent, Real-Time Surveillance & Behavioral Anomaly Engine Powered by YOLOv11m, SORT Tracking, and FastAPI**
 
@@ -15,11 +16,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 
-[Overview](#-overview) • [Key Features](#-key-features) • [Anomaly Algorithms](#-behavioural-anomaly-detection-suite) • [Architecture](#-system-architecture) • [Quick Start](#-quick-start) • [API Reference](#-api--websocket-reference) • [Documentation](#-research--documentation-suite)
+[Overview](#-overview) • [Live Demo](#-live-demo) • [Key Features](#-key-features) • [Anomaly Algorithms](#-behavioural-anomaly-detection-suite) • [Architecture](#-system-architecture) • [Quick Start](#-quick-start) • [API Reference](#-api--websocket-reference) • [Documentation](#-research--documentation-suite)
 
 </div>
 
 ---
+
+> [!TIP]
+> **🌐 Live Interactive Demo**: Experience the full UI dashboard running live in Simulation / Demo Mode without installing anything: **[https://company-ai-steel.vercel.app](https://company-ai-steel.vercel.app)**
 
 > [!IMPORTANT]
 > **CrowdLens** is an open-source, edge-ready security surveillance platform designed for educational institutions, campuses, and commercial properties. It turns standard RTSP camera feeds, webcams, or offline video files into automated threat detection nodes without relying on expensive proprietary software.
