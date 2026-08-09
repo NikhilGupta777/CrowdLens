@@ -153,7 +153,7 @@ flowchart TD
 ### Running the Application
 
 #### 🚀 Option A: One-Click Windows Start
-Double-click [`start.bat`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/start.bat) in the project root. It automatically initializes the backend server, launches the Vite development server, and opens your browser.
+Double-click [`start.bat`](start.bat) in the project root. It automatically initializes the backend server, launches the Vite development server, and opens your browser.
 
 #### 🛠️ Option B: Manual Two-Terminal Launch
 
@@ -224,14 +224,14 @@ Tested across standard desktop and server hardware configurations ($640\times 36
 
 ## 📚 Research & Documentation Suite
 
-Comprehensive technical, architectural, and research publications are indexed in the [`docs/`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs) folder:
+Comprehensive technical, architectural, and research publications are indexed in the [`docs/`](docs/) folder:
 
-- 📄 [`01_FULL_PROJECT_REPORT.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/01_FULL_PROJECT_REPORT.md) — Complete 30-page engineering project thesis.
-- 📐 [`02_ARCHITECTURE_DOCUMENT.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/02_ARCHITECTURE_DOCUMENT.md) — Detailed software design specification & data pipeline.
-- 📊 [`03_PPT_CONTENT.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/03_PPT_CONTENT.md) — Presentation deck slides & defense script.
-- 📜 [`04_JOURNAL_PAPER_CONTENT.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/04_JOURNAL_PAPER_CONTENT.md) — IEEE format academic journal paper draft.
-- 🧩 [`05_FEATURE_LIST_AND_MODULES.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/05_FEATURE_LIST_AND_MODULES.md) — Feature breakdown & module mapping.
-- 🔮 [`06_FUTURE_SCOPE_AND_FIGHT_DETECTION.md`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/docs/06_FUTURE_SCOPE_AND_FIGHT_DETECTION.md) — Roadmap & ML fight detection research.
+- 📄 [`01_FULL_PROJECT_REPORT.md`](docs/01_FULL_PROJECT_REPORT.md) — Complete 30-page engineering architecture report.
+- 📐 [`02_ARCHITECTURE_DOCUMENT.md`](docs/02_ARCHITECTURE_DOCUMENT.md) — Detailed software design specification & data pipeline.
+- 📊 [`03_PPT_CONTENT.md`](docs/03_PPT_CONTENT.md) — Presentation deck slides & architecture script.
+- 📜 [`04_JOURNAL_PAPER_CONTENT.md`](docs/04_JOURNAL_PAPER_CONTENT.md) — IEEE format academic journal paper draft.
+- 🧩 [`05_FEATURE_LIST_AND_MODULES.md`](docs/05_FEATURE_LIST_AND_MODULES.md) — Feature breakdown & module mapping.
+- 🔮 [`06_FUTURE_SCOPE_AND_FIGHT_DETECTION.md`](docs/06_FUTURE_SCOPE_AND_FIGHT_DETECTION.md) — Roadmap & ML fight detection research.
 
 ---
 
@@ -248,7 +248,7 @@ Contributions are welcome! Please follow these steps:
 
 ## 📜 License
 
-Distributed under the MIT License. See [`LICENSE`](file:///c:/Users/g_n-n/Desktop/apps/8thSem%20Project/Gemini-Clone/LICENSE) for details.
+Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
 
 ---
 

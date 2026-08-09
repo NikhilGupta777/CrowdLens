@@ -12,7 +12,7 @@
 **By:** [Your Names]
 **Guide:** [Faculty Name]
 **Department:** [Department Name]
-**Institution:** [College Name]
+**Institution:** Campus AI Surveillance & Computer Vision Research Group
 **Date:** [Date]
 
 ---
